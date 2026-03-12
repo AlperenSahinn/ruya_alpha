@@ -13,7 +13,7 @@
 
 * **PBR Rasterizer:** Physically Based Rendering pipeline for realistic material interaction.
 * **Ray Traced Shadows:** Hardware-accelerated Ray Traced directional light shadows.
-* **Multi-Threaded Architecture:** Decoupled **Main-Render thread** architecture utilizing a custom **Job System** for parallel workload distribution.
+* **Multi-Threaded Architecture:** Decoupled **Main-Render thread** architecture.
 * **GLTF Integration:** Seamless model loading via the `tinygltf` library.
 * **GameFramework:** ENTT based scripting framework for game logic.
 * **Asset System:** Early-stage asset management (Note: Currently in experimental phase).
