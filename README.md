@@ -65,4 +65,18 @@ Once the build is complete, you can find the executable at the following path:
 
 ---
 
+## Controls & Navigation
+
+### Loading a Scene
+1. Navigate to the `Scenes` folder in `Asset Browser`.
+2. **Double-click** on the desired scene to load it into the hierarchy.
+
+### Editor Camera Movement
+| Action | Control |
+| :--- | :--- |
+| **Move Forward/Left/Back/Right** | `W` `A` `S` `D` |
+| **Rotate Camera** | `Right Click` (Hold) + Mouse Move |
+
+---
+
 > **Disclaimer:** The Asset System is in its infancy and may not behave as expected.
