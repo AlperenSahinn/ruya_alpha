@@ -1,6 +1,7 @@
 #pragma once
 #include <Volk/volk.h>
 #include <vulkan_memory_allocator/vk_mem_alloc.h>
+#include <ktx/ktx.h>
 
 namespace ruya
 {
@@ -9,8 +10,8 @@ namespace ruya
 	class VulkanImage
 	{
 	public:
-		VulkanImage(VulkanContext* pVulkanContext, void* data, VkImageType imageType, VkExtent3D imageExtent, VkFormat format, VkImageAspectFlags imageAspectFlags, bool isMipmapped);
 		VulkanImage(VulkanContext* pVulkanContext, VkImageType imageType, VkExtent3D imageExtent, VkFormat format, VkImageAspectFlags imageAspectFlags);
+		VulkanImage(VulkanContext* pVulkanContext, ktxTexture2* ktxTex, VkImageAspectFlags imageAspectFlags);
 		~VulkanImage();
 
 		VulkanImage(const VulkanImage&) = delete;

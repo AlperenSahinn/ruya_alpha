@@ -19,5 +19,11 @@ namespace editor
 		float cachedMs = 0.0f;
 		float cachedFps = 0.0f;
 		char buffer[64] = {};
+
+		static constexpr int kFpsHistorySize = 60;
+		float fpsHistory[kFpsHistorySize] = {};
+		int fpsHistoryIndex = 0;
+
+		bool stepRequested = false;
 	};
 }

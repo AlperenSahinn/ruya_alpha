@@ -9,11 +9,10 @@
 #include <core/assert.h>
 
 #include "scene_system.h"
+#include "entity_id.h"
 
 namespace ruya
 {
-	using EntityID = std::uint64_t;
-
 	class Scene
 	{
 	public:
@@ -34,21 +33,27 @@ namespace ruya
 		entt::basic_registry<EntityID>& GetENTTRegistry();
 
 		template <typename T>
-		void AddComponent(EntityID entityId)
+		void AddComponent(EntityID entityID)
 		{
-			registry.emplace<T>(entityId);
+			registry.emplace<T>(entityID);
 		}
 
 		template <typename T>
-		void RemoveComponent(EntityID entityId)
+		void RemoveComponent(EntityID entityID)
 		{
-			registry.erase<T>(entityId);
+			registry.erase<T>(entityID);
 		}
 
 		template <typename T>
-		T* TryGetComponent(EntityID entityId)
+		T* TryGetComponent(EntityID entityID)
 		{
-			return registry.try_get<T>(entityId);
+			return registry.try_get<T>(entityID);
+		}
+
+		template <typename T>
+		bool HasComponent(EntityID entityID) const
+		{
+			return registry.all_of<T>(entityID);
 		}
 
 		template<typename... Components>

@@ -3,19 +3,17 @@
 > [!NOTE]
 > **Showcase Repository:** This repository is a culmination of various components developed across my private repositories. While this public version highlights the core architecture, the development history and my journey with the Vulkan API extend much further back.
 
-![Ruya Engine Editor](screenshots/teaser_01.png)
+![Ruya Engine Editor](screenshots/screenshoot_01.png)
 
-**Ruya** is a Vulkan-based game engine developed for personal projects and as a foundation for future research in computer graphics. While the engine is under active development, it provides a robust framework for modern rendering techniques.
-
-![Ruya Engine Editor](screenshots/teaser_02.png)
+**Ruya** is a Vulkan-based game engine developed for personal projects and as a foundation for future research in computer graphics. Ruya Engine is under active development. 
+Video demo: https://youtu.be/W4TspRLuAQw
 
 ## Features
 
 * **PBR Rasterizer:** Physically Based Rendering pipeline for realistic material interaction.
 * **Ray Traced Shadows:** Hardware-accelerated Ray Traced directional light shadows.
-* **Multi-Threaded Architecture:** Decoupled **Main-Render thread** architecture.
-* **Bindless Descriptors:** Bindless texture and material management.
-* **Basic GPU-Driven Rendering:** Indirect drawing for basic GPU-driven rendering.
+* **Ray Traced Diffuse Global Illumunation:** Hardware-accelerated Ray Traced diffuse GI.
+* **Multi-Threaded Architecture:** Job system based architecture.
 * **GLTF Integration:** Seamless model loading via the `tinygltf` library.
 * **GameFramework:** ENTT based scripting framework for game logic.
 * **Asset System:** Early-stage asset management (Note: Currently in experimental phase).
@@ -58,26 +56,18 @@ setup_windows.bat
 
 This will generate the **Visual Studio 2026** solution.
 3. **Build:**
-Open the generated solution in VS2026 and build the project in either `debug` or `release` mode.
+Open the generated solution in VS2026 and build the project in `distribution` mode.
 
 ### Running the Editor
 
 Once the build is complete, you can find the executable at the following path:
-`bin/windows-x86_64/{debug|release}/ruya_editor/`
+`bin/windows-x86_64/Distribution/ruya_editor/`
 
----
+### Loading the Test Scene
 
-## Controls & Navigation
-
-### Loading a Scene
-1. Navigate to the `Scenes` folder in `Asset Browser`.
-2. **Double-click** on the desired scene to load it into the hierarchy.
-
-### Editor Camera Movement
-| Action | Control |
-| :--- | :--- |
-| **Move Forward/Left/Back/Right** | `W` `A` `S` `D` |
-| **Rotate Camera** | `Right Click` (Hold) + Mouse Move |
+To test the renderer, you can load the included test scene:
+1. Open the Asset Browser window and navigate to the scenes folder.
+2. Double-click medieval_scene to load it.
 
 ---
 

@@ -1,6 +1,4 @@
 #pragma once
-#include <vector>
-
 #include "scene.h"
 #include "scene_system.h"
 
@@ -15,13 +13,13 @@ namespace ruya
 		RenderSystem(const SceneSystem&) = delete;
 		RenderSystem& operator=(const SceneSystem&) = delete;
 
+		void OnStart() override;
+		void OnShutdown() override;
+
 		void OnEngineUpdate() override;
 
 		void OnSceneLoad() override;
 		void OnSceneUnload() override;
-
-	private:
-		void UpdateTransformRecursive(EntityID entity);
 
 	private:
 		uint32_t frameNumber = 0;

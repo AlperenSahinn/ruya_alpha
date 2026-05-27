@@ -6,6 +6,8 @@
 
 #include "editor_camera.h"
 
+struct ImGuiStyle;
+
 namespace editor
 {
 	class Editor
@@ -18,17 +20,23 @@ namespace editor
 		Editor& operator=(const Editor&) = delete;
 
 		std::vector<std::unique_ptr<Widget>>& GetWidgets();
-		static void SetThemeDark();
+		static void SetThemeModernDark();
 
 		void UpdateEditorCamera();
+
+		void UpdateDpiScale();
 
 	private:
 		void InitEditor();
 		void ShutdownEditor();
 
+		float GetCurrentDpiScale() const;
+
 	private:
 		std::vector<std::unique_ptr<Widget>> widgets;
 		std::unique_ptr<EditorCameraSystem> editorCameraSystem;
+
+		float currentDpiScale = 1.0f;
 	};
 
 	void EditorUpdate(Editor* pEditor);

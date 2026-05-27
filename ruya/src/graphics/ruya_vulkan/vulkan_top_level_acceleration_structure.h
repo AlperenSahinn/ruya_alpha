@@ -15,6 +15,7 @@
 namespace ruya
 {
     class VulkanContext;
+    class VulkanCommandBuffer;
 
 	struct VulkanBottomLevelAccelerationStructureInstance
 	{
@@ -26,7 +27,7 @@ namespace ruya
     class VulkanTopLevelAccelerationStructure
     {
     public:
-        VulkanTopLevelAccelerationStructure(VulkanContext* pVulkanContext, std::unordered_map<RyID, std::unique_ptr<VulkanBottomLevelAccelerationStructureInstance>>& blasInstances);
+        VulkanTopLevelAccelerationStructure(VulkanContext* pVulkanContext, const std::vector<std::pair<uint32_t, VulkanBottomLevelAccelerationStructureInstance*>>& blasInstances, VulkanCommandBuffer* pCommandBuffer);
         ~VulkanTopLevelAccelerationStructure();
 
         VkAccelerationStructureKHR GetDeviceHandle() const;
@@ -43,5 +44,7 @@ namespace ruya
         uint32_t instanceCount;
 
         VkDevice device;
+
+        std::unique_ptr<VulkanBuffer> stagingBuffer;
     };
 }

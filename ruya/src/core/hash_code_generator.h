@@ -5,17 +5,20 @@
 #define XXH_INLINE_ALL
 #include <xxhash/xxhash.h>
 
-namespace ruya::hash_code_generator
+namespace ruya
 {
-    inline uint64_t XXHash64(const std::string& string, uint64_t seed = 0)
+    namespace hash_code_generator
     {
-        uint64_t hash = XXH64(string.data(), string.size(), seed);
-
-        if (hash == 0xffffffffffffffff)
+        inline uint64_t XXHash64(const std::string& string, uint64_t seed = 0)
         {
-            hash = 0xfffffffffffffffe;
-        }
+            uint64_t hash = XXH64(string.data(), string.size(), seed);
 
-        return hash;
+            if (hash == 0xffffffffffffffff)
+            {
+                hash = 0xfffffffffffffffe;
+            }
+
+            return hash;
+        }
     }
 }

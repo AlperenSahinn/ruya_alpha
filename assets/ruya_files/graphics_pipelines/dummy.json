@@ -1,0 +1,176 @@
+       {
+            "type": "Compute",
+            "standartDescriptorTypes": [
+                "CameraData"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferAlbedoDepth",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferVertexNormals",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferMotionVectors",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Sampled",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "gbufferVertexNormals",
+                    "type": "Sampled",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "giSpatialDenoise",
+                    "type": "Sampled",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "restirResolve",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "giTemporalDenoise",
+                    "type": "Storage",
+                    "usage": "Write"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 16,
+                "height": 16,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/gi_temporal_resolve.spv"
+                }
+            ]
+        },
+
+
+{
+            "type": "Compute",
+            "standartDescriptorTypes": [
+                "CameraData"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferAlbedoDepth",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferVertexNormals",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "giTemporalDenoise",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "giSpatialDenoiseHorizontal",
+                    "type": "Storage",
+                    "usage": "Write"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 16,
+                "height": 16,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/bilateral_blur_gi_horizontal.spv"
+                }
+            ]
+        },
+        {
+            "type": "Compute",
+            "standartDescriptorTypes": [
+                "CameraData"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferAlbedoDepth",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferVertexNormals",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "giSpatialDenoiseHorizontal",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "giSpatialDenoise",
+                    "type": "Storage",
+                    "usage": "Write"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 16,
+                "height": 16,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/bilateral_blur_gi_vertical.spv"
+                }
+            ]
+        },
+
+                {
+            "name": "giTemporalDenoise",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "giSpatialDenoiseHorizontal",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "giSpatialDenoise",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },

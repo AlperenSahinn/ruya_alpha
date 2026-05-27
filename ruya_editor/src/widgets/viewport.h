@@ -1,8 +1,10 @@
 #pragma once
-
-#include "Widget.h"
+#include <string>
+#include <unordered_map>
 
 #include <volk/volk.h>
+
+#include "Widget.h"
 
 namespace editor
 {
@@ -20,7 +22,11 @@ namespace editor
 		static bool IsActive();
 
 	private:
-		std::vector<VkDescriptorSet> drawTextures;
+		void RecreateDrawTextures();
+		void DestroyDrawTextures();
+
 		static bool isActive;
+		std::unordered_map<std::string, std::vector<VkDescriptorSet>> renderTargetDescriptorSets;
+		std::string selectedRenderTarget;
 	};
 }

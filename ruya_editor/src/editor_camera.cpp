@@ -1,9 +1,7 @@
 #include "editor_camera.h"
 
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp> 
 #include <glm/gtx/transform.hpp>
@@ -16,6 +14,10 @@
 editor::EditorCameraSystem::EditorCameraSystem()
 {
 	editorCamera = std::make_unique<EditorCamera>();
+
+	editorCamera->targetPosition = editorCamera->position;
+	editorCamera->targetYaw = editorCamera->yaw;
+	editorCamera->targetPitch = editorCamera->pitch;
 }
 
 editor::EditorCameraSystem::~EditorCameraSystem()
@@ -24,25 +26,27 @@ editor::EditorCameraSystem::~EditorCameraSystem()
 
 void editor::EditorCameraSystem::OnEngineUpdate()
 {
+	float dt = engine->GetWindow()->GetDeltaTime();
+
 	if (Viewport::IsActive())
 	{
 		if (ruya::Input::IsKeyPressed(ruya::Input::KeyCode::W))
-			editorCamera->position = editorCamera->position + editorCamera->cameraSpeed * editorCamera->front * engine->GetWindow()->GetDeltaTime();
+			editorCamera->targetPosition += editorCamera->cameraSpeed * editorCamera->front * dt;
 
 		if (ruya::Input::IsKeyPressed(ruya::Input::KeyCode::S))
-			editorCamera->position = editorCamera->position - editorCamera->cameraSpeed * editorCamera->front * engine->GetWindow()->GetDeltaTime();
+			editorCamera->targetPosition -= editorCamera->cameraSpeed * editorCamera->front * dt;
 
 		if (ruya::Input::IsKeyPressed(ruya::Input::KeyCode::A))
-			editorCamera->position = editorCamera->position - glm::normalize(glm::cross(editorCamera->front, editorCamera->up)) * editorCamera->cameraSpeed * engine->GetWindow()->GetDeltaTime();
+			editorCamera->targetPosition -= glm::normalize(glm::cross(editorCamera->front, editorCamera->up)) * editorCamera->cameraSpeed * dt;
 
 		if (ruya::Input::IsKeyPressed(ruya::Input::KeyCode::D))
-			editorCamera->position = editorCamera->position + glm::normalize(glm::cross(editorCamera->front, editorCamera->up)) * editorCamera->cameraSpeed * engine->GetWindow()->GetDeltaTime();
+			editorCamera->targetPosition += glm::normalize(glm::cross(editorCamera->front, editorCamera->up)) * editorCamera->cameraSpeed * dt;
 
 		if (ruya::Input::IsKeyPressed(ruya::Input::KeyCode::E))
-			editorCamera->position = editorCamera->position + editorCamera->cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * engine->GetWindow()->GetDeltaTime();
+			editorCamera->targetPosition += editorCamera->cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * dt;
 
 		if (ruya::Input::IsKeyPressed(ruya::Input::KeyCode::Q))
-			editorCamera->position = editorCamera->position - editorCamera->cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * engine->GetWindow()->GetDeltaTime();
+			editorCamera->targetPosition -= editorCamera->cameraSpeed * glm::vec3(0.0f, 1.0f, 0.0f) * dt;
 
 		if (ruya::Input::IsMouseButtonPressed(ruya::Input::MouseButtonCode::Right))
 		{
@@ -51,41 +55,55 @@ void editor::EditorCameraSystem::OnEngineUpdate()
 
 			ruya::Input::GetDeltaMouse(&xoffset, &yoffset);
 
+			if (!editorCamera->wasRightMousePressed)
+			{
+				editorCamera->wasRightMousePressed = true;
+				xoffset = 0.0f;
+				yoffset = 0.0f;
+			}
+
 			ruya::Input::SetMouseVisible(false);
 			ruya::Input::LockMouseToWindow(true);
 
 			yoffset = -yoffset;
 
-			xoffset *= editorCamera->mouseSensitivity * engine->GetWindow()->GetDeltaTime();
-			yoffset *= editorCamera->mouseSensitivity * engine->GetWindow()->GetDeltaTime();
+			xoffset *= editorCamera->mouseSensitivity;
+			yoffset *= editorCamera->mouseSensitivity;
 
-			editorCamera->yaw += xoffset;
-			editorCamera->pitch += yoffset;
+			editorCamera->targetYaw += xoffset;
+			editorCamera->targetPitch += yoffset;
 
-			if (editorCamera->pitch > 89.0f)
-				editorCamera->pitch = 89.0f;
-			if (editorCamera->pitch < -89.0f)
-				editorCamera->pitch = -89.0f;
-
-			glm::vec3 front;
-			front.x = cos(glm::radians(editorCamera->yaw)) * cos(glm::radians(editorCamera->pitch));
-			front.y = sin(glm::radians(editorCamera->pitch));
-			front.z = sin(glm::radians(editorCamera->yaw)) * cos(glm::radians(editorCamera->pitch));
-			editorCamera->front = glm::normalize(front);
+			if (editorCamera->targetPitch > 89.0f)
+				editorCamera->targetPitch = 89.0f;
+			if (editorCamera->targetPitch < -89.0f)
+				editorCamera->targetPitch = -89.0f;
 		}
-
 		else
 		{
+			editorCamera->wasRightMousePressed = false;
 			ruya::Input::SetMouseVisible(true);
 			ruya::Input::LockMouseToWindow(false);
 		}
 	}
-
 	else
 	{
+		editorCamera->wasRightMousePressed = false;
 		ruya::Input::SetMouseVisible(true);
 		ruya::Input::LockMouseToWindow(false);
 	}
+
+	float moveAlpha = 1.0f - expf(-editorCamera->moveSmoothness * dt);
+	float lookAlpha = 1.0f - expf(-editorCamera->lookSmoothness * dt);
+
+	editorCamera->position = glm::mix(editorCamera->position, editorCamera->targetPosition, moveAlpha);
+	editorCamera->yaw = glm::mix(editorCamera->yaw, editorCamera->targetYaw, lookAlpha);
+	editorCamera->pitch = glm::mix(editorCamera->pitch, editorCamera->targetPitch, lookAlpha);
+
+	glm::vec3 front;
+	front.x = cos(glm::radians(editorCamera->yaw)) * cos(glm::radians(editorCamera->pitch));
+	front.y = sin(glm::radians(editorCamera->pitch));
+	front.z = sin(glm::radians(editorCamera->yaw)) * cos(glm::radians(editorCamera->pitch));
+	editorCamera->front = glm::normalize(front);
 
 	ruya::RenderData* renderData = engine->GetRenderDataWriteBuffer();
 
@@ -110,6 +128,7 @@ void editor::EditorCameraSystem::OnEngineUpdate()
 		editorCamera->cameraNear,
 		editorCamera->cameraFar
 	);
-	renderData->camera.proj[1][1] *= -1;
+
 	renderData->camera.viewproj = renderData->camera.proj * renderData->camera.view;
+	renderData->camera.invViewproj = glm::inverse(renderData->camera.viewproj);
 }

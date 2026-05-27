@@ -1,0 +1,623 @@
+{
+    "pipelineImages": [
+        {
+            "name": "gbufferAlbedoDepth",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "gbufferPositionMetallic",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "gbufferNormalRoughness",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "gbufferVertexNormals",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "gbufferMotionVectors",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "gbufferDepth",
+            "format": "D32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "directionalLightShadowMap",
+            "format": "R8_UNORM",
+            "dimension": "Full"
+        },
+        {
+            "name": "diffuseGI",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "diffuseGIRayDir",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "temporalReuseDiffuseGISH0",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "temporalReuseDiffuseGISH1",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "temporalReuseDiffuseGISH2",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "temporalReuseDiffuseGISH3",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "diffuseGISH0",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "diffuseGISH1",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "diffuseGISH2",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "diffuseGISH3",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "diffuseGIResolve",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "lightPassResultImage",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "taaPassResultImage",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        },
+        {
+            "name": "toneMapPassResultImage",
+            "format": "R32G32B32A32_SFLOAT",
+            "dimension": "Full"
+        }
+    ],
+    "pipelineBlocks": [
+        {
+            "type": "Rasterization",
+            "standartDescriptorTypes": [
+                "Texture2Ds",
+                "RenderMaterials",
+                "RenderItems",
+                "CameraData"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferAlbedoDepth",
+                    "type": "ColorAttachment",
+                    "usage": "Write"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "ColorAttachment",
+                    "usage": "Write"
+                },
+                {
+                    "pipelineImageName": "gbufferNormalRoughness",
+                    "type": "ColorAttachment",
+                    "usage": "Write"
+                },
+                {
+                    "pipelineImageName": "gbufferVertexNormals",
+                    "type": "ColorAttachment",
+                    "usage": "Write"
+                },
+                {
+                    "pipelineImageName": "gbufferMotionVectors",
+                    "type": "ColorAttachment",
+                    "usage": "Write"
+                },
+                {
+                    "pipelineImageName": "gbufferDepth",
+                    "type": "DepthAttachment",
+                    "usage": "Write"
+                }
+            ],
+            "dispatchSize": "Full",
+            "shaders": [
+                {
+                    "type": "Vertex",
+                    "path": "ruya_files/shaders/compiled/gbuffer_vertex.spv"
+                },
+                {
+                    "type": "Fragment",
+                    "path": "ruya_files/shaders/compiled/gbuffer_fragment.spv"
+                }
+            ]
+        },
+        {
+            "type": "RayTracing",
+            "standartDescriptorTypes": [
+                "AtmosphericLightData",
+                "TLAS"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferVertexNormals",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "directionalLightShadowMap",
+                    "type": "Storage",
+                    "usage": "Write"
+                }
+            ],
+            "dispatchSize": "Full",
+            "shaders": [
+                {
+                    "type": "RayGeneration",
+                    "path": "ruya_files/shaders/compiled/rt_directional_light_shadow_ray_generation.spv"
+                },
+                {
+                    "type": "RayMiss",
+                    "path": "ruya_files/shaders/compiled/rt_directional_light_shadow_ray_miss.spv"
+                }
+            ]
+        },
+        {
+            "type": "RayTracing",
+            "standartDescriptorTypes": [
+                "CameraData",
+                "AtmosphericLightData",
+                "TLAS",
+                "Texture2Ds",
+                "RenderMaterials",
+                "RenderItems"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferNormalRoughness",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "diffuseGI",
+                    "type": "Storage",
+                    "usage": "Write"
+                },
+                {
+                    "pipelineImageName": "diffuseGIRayDir",
+                    "type": "Storage",
+                    "usage": "Write"
+                }
+            ],
+            "dispatchSize": "Full",
+            "shaders": [
+                {
+                    "type": "RayGeneration",
+                    "path": "ruya_files/shaders/compiled/pt_diffuse_global_illumination_ray_generation.spv"
+                },
+                {
+                    "type": "RayMiss",
+                    "path": "ruya_files/shaders/compiled/pt_diffuse_global_illumination_ray_miss.spv"
+                },
+                {
+                    "type": "RayMiss",
+                    "path": "ruya_files/shaders/compiled/pt_diffuse_global_illumination_shadow_ray_miss.spv"
+                },
+                {
+                    "type": "RayClosestHit",
+                    "path": "ruya_files/shaders/compiled/pt_diffuse_global_illumination_ray_closest_hit.spv"
+                }
+            ]
+        },
+        {
+            "type": "Compute",
+            "standartDescriptorTypes": [
+                "CameraData"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferAlbedoDepth",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "gbufferMotionVectors",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH0",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH1",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH2",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH3",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGI",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGIRayDir",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "temporalReuseDiffuseGISH0",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "temporalReuseDiffuseGISH1",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "temporalReuseDiffuseGISH2",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "temporalReuseDiffuseGISH3",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 16,
+                "height": 16,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/diffuse_gi_temporal_reuse.spv"
+                }
+            ]
+        },
+        {
+            "type": "Compute",
+            "standartDescriptorTypes": [
+                "CameraData"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferAlbedoDepth",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "gbufferVertexNormals",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "temporalReuseDiffuseGISH0",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "temporalReuseDiffuseGISH1",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "temporalReuseDiffuseGISH2",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "temporalReuseDiffuseGISH3",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH0",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH1",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH2",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH3",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 16,
+                "height": 16,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/diffuse_gi_spatial_reuse.spv"
+                }
+            ]
+        },
+        {
+            "type": "Compute",
+            "standartDescriptorTypes": [],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferNormalRoughness",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH0",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH1",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH2",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGISH3",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "diffuseGIResolve",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 16,
+                "height": 16,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/diffuse_gi_sh4_resolve.spv"
+                }
+            ]
+        },
+        {
+            "type": "Compute",
+            "standartDescriptorTypes": [
+                "CameraData",
+                "AtmosphericLightData"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferAlbedoDepth",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferPositionMetallic",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "gbufferNormalRoughness",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "directionalLightShadowMap",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "diffuseGIResolve",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "lightPassResultImage",
+                    "type": "Storage",
+                    "usage": "Write"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 128,
+                "height": 1,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/light_pass_compute_shader.spv"
+                }
+            ]
+        },
+        {
+            "type": "Compute",
+            "standartDescriptorTypes": [
+                "CameraData"
+            ],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "gbufferAlbedoDepth",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "gbufferMotionVectors",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "taaPassResultImage",
+                    "type": "Sampled",
+                    "usage": "Read",
+                    "frameIndex": "PrevFrame"
+                },
+                {
+                    "pipelineImageName": "lightPassResultImage",
+                    "type": "Storage",
+                    "usage": "Read",
+                    "frameIndex": "CurrentFrame"
+                },
+                {
+                    "pipelineImageName": "taaPassResultImage",
+                    "type": "Storage",
+                    "usage": "Write",
+                    "frameIndex": "CurrentFrame"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 16,
+                "height": 16,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/taa_compute.spv"
+                }
+            ]
+        },
+        {
+            "type": "Compute",
+            "standartDescriptorTypes": [],
+            "pipelineImageDescriptors": [
+                {
+                    "pipelineImageName": "taaPassResultImage",
+                    "type": "Storage",
+                    "usage": "Read"
+                },
+                {
+                    "pipelineImageName": "toneMapPassResultImage",
+                    "type": "Storage",
+                    "usage": "Write"
+                }
+            ],
+            "dispatchSize": "Full",
+            "computeShaderThreadGroupDimensions": {
+                "width": 128,
+                "height": 1,
+                "depth": 1
+            },
+            "shaders": [
+                {
+                    "type": "Compute",
+                    "path": "ruya_files/shaders/compiled/tone_map_compute.spv"
+                }
+            ]
+        }
+    ]
+}

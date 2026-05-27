@@ -5,19 +5,16 @@
 
 ruya::LightingSystem::LightingSystem()
 {
-	directionalLight = std::make_unique<DirectionalLight>();
+	directionalLight = std::make_unique<AtmosphericLight>();
 }
 
 void ruya::LightingSystem::OnEngineUpdate()
 {
 	RenderData* renderData = engine->GetRenderDataWriteBuffer();
-	renderData->directionalLight.sunlightDirection = directionalLight->sunlightDirection;
-	renderData->directionalLight.sunlightColor = directionalLight->sunlightColor;
-	renderData->directionalLight.ambientColor = directionalLight->ambientColor;
-	renderData->directionalLight.pad = directionalLight->pad;
+	renderData->directionalLight = *directionalLight.get();
 }
 
-ruya::DirectionalLight* ruya::LightingSystem::GetDirectionalLight() const
+ruya::AtmosphericLight* ruya::LightingSystem::GetDirectionalLight() const
 {
 	return directionalLight.get();
 }

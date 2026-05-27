@@ -28,8 +28,8 @@ bool ruya::Input::IsKeyPressed(KeyCode keyCode)
         return keyboardState[SDL_SCANCODE_E];
     case KeyCode::Q:
         return keyboardState[SDL_SCANCODE_Q];
-	case KeyCode::F:
-		return keyboardState[SDL_SCANCODE_F];
+    case KeyCode::F:
+        return keyboardState[SDL_SCANCODE_F];
     default:
         return false;
     }
@@ -68,9 +68,9 @@ void ruya::Input::LockMouseToWindow(bool b)
 {
     SDL_SetWindowRelativeMouseMode(engine->GetWindow()->GetSDLWindow(), b);
 
-    if(b)
+    if (b)
     {
-        if(firstMouseLock)
+        if (firstMouseLock)
         {
             firstMouseLock = false;
             SDL_GetMouseState(&lastMousePosX, &lastMousePosY);

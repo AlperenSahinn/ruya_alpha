@@ -1,10 +1,11 @@
 #include "menu_bar.h"
 
 #include <engine.h>
-
-#include "directional_light_properties.h"
-
 #include <editor.h>
+
+#include "atmospheric_light_properties.h"
+#include "editor_widgets.h"
+#include "../editor_style.h"
 
 void editor::MenuBar::Draw()
 {
@@ -12,11 +13,21 @@ void editor::MenuBar::Draw()
     {
         if (ImGui::BeginMenu("File"))
         {
-            if (ImGui::MenuItem("Open"))
+            if (ImGui::MenuItem(IconLabel(u8"\uE24A", "Open"), "Ctrl+O"))
             {
             }
 
-            if (ImGui::MenuItem("Save"))
+            if (ImGui::MenuItem(IconLabel(u8"\uE248", "Save"), "Ctrl+S"))
+            {
+            }
+
+            if (ImGui::MenuItem(IconLabel(u8"\uE248", "Save As..."), "Ctrl+Shift+S"))
+            {
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem(IconLabel(u8"\uE4F6", "Exit")))
             {
             }
 
@@ -25,78 +36,73 @@ void editor::MenuBar::Draw()
 
         if (ImGui::BeginMenu("Edit"))
         {
-            if (ImGui::MenuItem("Undo"))
+            if (ImGui::MenuItem(IconLabel(u8"\uE07E", "Undo"), "Ctrl+Z"))
             {
             }
 
-            if (ImGui::MenuItem("Redo"))
+            if (ImGui::MenuItem(IconLabel(u8"\uE080", "Redo"), "Ctrl+Y"))
             {
             }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem(IconLabel(u8"\uE124", "Preferences")))
+            {
+            }
+
             ImGui::EndMenu();
         }
 
-		if (ImGui::BeginMenu("Graphics"))
-		{
-			if (ImGui::BeginMenu("Lighting"))
-			{
-				if (ImGui::MenuItem("Atmospheric Light Properties")) 
+        if (ImGui::BeginMenu("Window"))
+        {
+            if (ImGui::BeginMenu(IconLabel(u8"\uE8BC", "Frame Rate")))
+            {
+                static int frameRateMode = 1;
+
+                if (ImGui::MenuItem("Unlimited", nullptr, frameRateMode == 0))
                 {
-                    if(!DirectionalLightProperties::visible)
+                    frameRateMode = 0;
+                    engine->GetWindow()->ChangeFrameRate(0);
+                }
+
+                if (ImGui::MenuItem("V-Sync", nullptr, frameRateMode == 1))
+                {
+                    frameRateMode = 1;
+                    engine->GetWindow()->ChangeFrameRate(1);
+                }
+
+                ImGui::EndMenu();
+            }
+
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Graphics"))
+        {
+            if (ImGui::BeginMenu(IconLabel(u8"\uE2DC", "Lighting")))
+            {
+                if (ImGui::MenuItem(IconLabel(u8"\uE540", "Atmospheric Light")))
+                {
+                    if (!AtmosphericLightProperties::visible)
                     {
-                        DirectionalLightProperties::visible = true;
+                        AtmosphericLightProperties::visible = true;
                     }
                 }
                 ImGui::EndMenu();
-			}
-            ImGui::EndMenu();
-		}
-
-        if (ImGui::BeginMenu("Preferences"))
-        {
+            }
             ImGui::EndMenu();
         }
 
-        const char8_t* utf8_playIcon = u8"\uE3D0";
-        const char* playIcon = reinterpret_cast<const char*>(utf8_playIcon);
+        if (ImGui::BeginMenu("View"))
+        {
+            ImGui::MenuItem(IconLabel(ico::kScene, "Scene Outliner"), nullptr, nullptr);
+            ImGui::MenuItem(IconLabel(ico::kName, "Properties"), nullptr, nullptr);
+            ImGui::MenuItem(IconLabel(ico::kFolder, "Asset Browser"), nullptr, nullptr);
+            ImGui::MenuItem(IconLabel(ico::kCube3D, "Viewport"), nullptr, nullptr);
+            ImGui::EndMenu();
+        }
 
-        const char8_t* utf8_pauseIcon = u8"\uE39E";
-        const char* pauseIcon = reinterpret_cast<const char*>(utf8_pauseIcon);
-
-        const char8_t* utf8_playPauseIcon = u8"\uE8BE";
-        const char* playPauseIcon = reinterpret_cast<const char*>(utf8_playPauseIcon);
-
-        const char8_t* utf8_stopIcon = u8"\uE46C";
-        const char* stopIcon = reinterpret_cast<const char*>(utf8_stopIcon);
-
-        float windowWidth = ImGui::GetWindowSize().x;
-
-        float buttonWidth = 80.0f;
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
-        float totalButtonsWidth = (buttonWidth * 3) + (spacing * 2);
-
-        ImGui::SameLine((windowWidth - totalButtonsWidth) * 0.5f);
-
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.20f, 0.85f, 0.30f, 1.00f));
-        if (ImGui::Button(playIcon)) {}
-        ImGui::PopStyleColor();
-
-        ImGui::SameLine();
-
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.75f, 0.20f, 1.00f));
-        if (ImGui::Button(pauseIcon)) {}
-        ImGui::PopStyleColor();
-
-        ImGui::SameLine();
-
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.30f, 0.60f, 0.95f, 1.00f));
-        if (ImGui::Button(playPauseIcon)) {}
-        ImGui::PopStyleColor();
-
-        ImGui::SameLine();
-
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.90f, 0.25f, 0.25f, 1.00f));
-        if (ImGui::Button(stopIcon)) {}
-        ImGui::PopStyleColor();
+        const float windowWidth = ImGui::GetWindowSize().x;
 
         float dt = engine->GetWindow()->GetDeltaTime();
         timer += dt;
@@ -106,23 +112,52 @@ void editor::MenuBar::Draw()
             cachedMs = dt * 1000.0f;
             cachedFps = (dt > 0.0f) ? (1.0f / dt) : 0.0f;
 
-            snprintf(buffer, sizeof(buffer), "ms: %.2f | fps: %.1f", cachedMs, cachedFps);
+            fpsHistory[fpsHistoryIndex] = cachedFps;
+            fpsHistoryIndex = (fpsHistoryIndex + 1) % kFpsHistorySize;
 
+            snprintf(buffer, sizeof(buffer), "%.1f fps  %.2f ms", cachedFps, cachedMs);
             timer = 0.0f;
         }
 
-        ImVec4 color;
+        ImVec4 fpsColor;
         if (cachedFps >= 59.0f)
-            color = ImVec4(0.20f, 0.85f, 0.25f, 1.0f);
+            fpsColor = kFpsGood;
         else if (cachedFps >= 29.0f)
-            color = ImVec4(0.95f, 0.75f, 0.20f, 1.0f);
+            fpsColor = kFpsOk;
         else
-            color = ImVec4(0.90f, 0.20f, 0.20f, 1.0f);
+            fpsColor = kFpsBad;
 
         float textWidth = ImGui::CalcTextSize(buffer).x;
-        ImGui::SameLine(windowWidth - textWidth - 10);
+        float sparklineWidth = 50.0f;
+        float totalFpsWidth = sparklineWidth + 6.0f + textWidth;
 
-        ImGui::PushStyleColor(ImGuiCol_Text, color);
+        ImGui::SameLine(windowWidth - totalFpsWidth - 12.0f);
+
+        ImVec2 sparkPos = ImGui::GetCursorScreenPos();
+        sparkPos.y += 2.0f;
+        float sparkH = ImGui::GetFrameHeight() - 4.0f;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+
+        float maxFps = 1.0f;
+        for (int i = 0; i < kFpsHistorySize; i++)
+            if (fpsHistory[i] > maxFps) maxFps = fpsHistory[i];
+
+        for (int i = 0; i < kFpsHistorySize - 1; i++)
+        {
+            int idx0 = (fpsHistoryIndex + i) % kFpsHistorySize;
+            int idx1 = (fpsHistoryIndex + i + 1) % kFpsHistorySize;
+            float x0 = sparkPos.x + (float)i / (kFpsHistorySize - 1) * sparklineWidth;
+            float x1 = sparkPos.x + (float)(i + 1) / (kFpsHistorySize - 1) * sparklineWidth;
+            float y0 = sparkPos.y + sparkH - (fpsHistory[idx0] / maxFps) * sparkH;
+            float y1 = sparkPos.y + sparkH - (fpsHistory[idx1] / maxFps) * sparkH;
+            ImU32 lineCol = ImGui::ColorConvertFloat4ToU32(ImVec4(fpsColor.x, fpsColor.y, fpsColor.z, 0.6f));
+            dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y1), lineCol, 1.0f);
+        }
+
+        ImGui::Dummy(ImVec2(sparklineWidth, 0));
+        ImGui::SameLine(0, 6.0f);
+
+        ImGui::PushStyleColor(ImGuiCol_Text, fpsColor);
         ImGui::TextUnformatted(buffer);
         ImGui::PopStyleColor();
 

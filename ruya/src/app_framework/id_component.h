@@ -1,9 +1,6 @@
 #pragma once
 #include <string>
-
-#include <cereal/types/string.hpp>
-#include <cereal/archives/json.hpp>
-#include <entt/entt.hpp>
+#include <nlohmann_json/json.hpp>
 
 namespace ruya
 {
@@ -11,11 +8,7 @@ namespace ruya
 	{
 		std::string name = "New Entity";
 		EntityID enttID{ entt::null };
-	};
 
-	template<typename Archive>
-	void serialize(Archive& archive, IdComponent& component)
-	{
-		archive(component.name, component.enttID);
-	}
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE(IdComponent, name, enttID)
+	};
 }

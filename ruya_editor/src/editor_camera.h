@@ -9,8 +9,15 @@ namespace editor
 {
 	struct EditorCamera
 	{
-		float cameraSpeed = 10.0f;
-		float mouseSensitivity = 5.0f;
+		glm::vec3 targetPosition = glm::vec3(0.0f, 0.0f, 3.0f);
+		float targetYaw = -90.0f;
+		float targetPitch = 0.0f;
+		bool wasRightMousePressed = false;
+		float moveSmoothness = 10.0f;
+		float lookSmoothness = 15.0f;
+
+		float cameraSpeed = 20.0f;
+		float mouseSensitivity = 0.25f;
 
 		float yaw = -90.0f;
 		float pitch = 0.0f;
@@ -28,7 +35,7 @@ namespace editor
 		float width = 1600.0f;
 		float height = 900.0f;
 		float cameraNear = 0.1f;
-		float cameraFar = 100000.0f;
+		float cameraFar = 10000.0f;
 	};
 
 	class EditorCameraSystem : public ruya::SceneSystem

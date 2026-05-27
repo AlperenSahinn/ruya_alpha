@@ -1,7 +1,7 @@
 #include "vulkan_top_level_acceleration_structure.h"
 #include "vulkan_context.h"
 
-ruya::VulkanTopLevelAccelerationStructure::VulkanTopLevelAccelerationStructure(VulkanContext* pVulkanContext, std::unordered_map<RyID, std::unique_ptr<VulkanBottomLevelAccelerationStructureInstance>>& blasInstances)
+ruya::VulkanTopLevelAccelerationStructure::VulkanTopLevelAccelerationStructure(VulkanContext* pVulkanContext, const std::vector<std::pair<uint32_t, VulkanBottomLevelAccelerationStructureInstance*>>& blasInstances, VulkanCommandBuffer* pCommandBuffer)
 {
     device = pVulkanContext->GetDevice();
 
@@ -20,9 +20,9 @@ ruya::VulkanTopLevelAccelerationStructure::VulkanTopLevelAccelerationStructure(V
     std::vector<VkAccelerationStructureInstanceKHR> tlasInstances;
     tlasInstances.reserve(instanceCount);
 
-    for (auto& pair : blasInstances)
+    for (auto& blasInstancePair : blasInstances)
     {
-        VulkanBottomLevelAccelerationStructureInstance* blasInstance = pair.second.get();
+        const VulkanBottomLevelAccelerationStructureInstance* blasInstance = blasInstancePair.second;
 
         const glm::mat4& transform = blasInstance->transform;
 
@@ -36,6 +36,12 @@ ruya::VulkanTopLevelAccelerationStructure::VulkanTopLevelAccelerationStructure(V
 
         VkAccelerationStructureDeviceAddressInfoKHR addressInfo = {};
         addressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+
+        if (blasInstance->blas == nullptr)
+        {
+            continue;
+        }
+
         addressInfo.accelerationStructure = blasInstance->blas->GetDeviceHandle();
 
         asInstance.accelerationStructureReference =
@@ -48,24 +54,48 @@ ruya::VulkanTopLevelAccelerationStructure::VulkanTopLevelAccelerationStructure(V
         tlasInstances.emplace_back(asInstance);
     }
 
-    std::unique_ptr<VulkanBuffer> stagingBuffer = std::make_unique<VulkanBuffer>(
+    if (tlasInstances.empty())
+    {
+        return;
+    }
+
+    uint32_t builtInstanceCount = static_cast<uint32_t>(tlasInstances.size());
+
+    stagingBuffer = std::make_unique<VulkanBuffer>(
         pVulkanContext,
-        instanceCount * sizeof(VkAccelerationStructureInstanceKHR),
+        builtInstanceCount * sizeof(VkAccelerationStructureInstanceKHR),
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         VMA_MEMORY_USAGE_CPU_ONLY
     );
 
     void* data = stagingBuffer->MapMemory();
-    memcpy(data, tlasInstances.data(), instanceCount * sizeof(VkAccelerationStructureInstanceKHR));
+    memcpy(data, tlasInstances.data(), builtInstanceCount * sizeof(VkAccelerationStructureInstanceKHR));
     stagingBuffer->UnmapMemory();
 
     VkBufferCopy copyRegion = {};
-    copyRegion.size = instanceCount * sizeof(VkAccelerationStructureInstanceKHR);
+    copyRegion.size = builtInstanceCount * sizeof(VkAccelerationStructureInstanceKHR);
 
-    pVulkanContext->ImmediateSubmitCommand([&](VulkanCommandBuffer* commandBuffer)
-        {
-            commandBuffer->CopyBufferToBuffer(*stagingBuffer, blasInstancesBuffer.get(), copyRegion);
-        });
+    pCommandBuffer->CopyBufferToBuffer(*stagingBuffer, blasInstancesBuffer.get(), copyRegion);
+
+    VkBufferMemoryBarrier copyBarrier = {};
+    copyBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    copyBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    copyBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    copyBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    copyBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    copyBarrier.buffer = blasInstancesBuffer->GetDeviceHandle();
+    copyBarrier.offset = 0;
+    copyBarrier.size = VK_WHOLE_SIZE;
+
+    vkCmdPipelineBarrier(
+        pCommandBuffer->GetDeviceHandle(),
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        0,
+        0, nullptr,
+        1, &copyBarrier,
+        0, nullptr
+    );
 
     VkAccelerationStructureGeometryInstancesDataKHR instancesData = {};
     instancesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -92,7 +122,7 @@ ruya::VulkanTopLevelAccelerationStructure::VulkanTopLevelAccelerationStructure(V
         device,
         VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
         &buildInfo,
-        &instanceCount,
+        &builtInstanceCount,
         &sizeInfo
     );
 
@@ -123,18 +153,30 @@ ruya::VulkanTopLevelAccelerationStructure::VulkanTopLevelAccelerationStructure(V
     buildInfo.dstAccelerationStructure = deviceHandle;
     buildInfo.scratchData.deviceAddress = scratchBuffer->GetDeviceAddress();
 
-    VkAccelerationStructureBuildRangeInfoKHR rangeInfo{ instanceCount, 0, 0, 0 };
+    VkAccelerationStructureBuildRangeInfoKHR rangeInfo{ builtInstanceCount, 0, 0, 0 };
     const VkAccelerationStructureBuildRangeInfoKHR* pRangeInfo = &rangeInfo;
 
-    pVulkanContext->ImmediateSubmitCommand([&](VulkanCommandBuffer* commandBuffer)
-        {
-            vkCmdBuildAccelerationStructuresKHR(
-                commandBuffer->GetDeviceHandle(),
-                1,
-                &buildInfo,
-                &pRangeInfo
-            );
-        });
+    vkCmdBuildAccelerationStructuresKHR(
+        pCommandBuffer->GetDeviceHandle(),
+        1,
+        &buildInfo,
+        &pRangeInfo
+    );
+
+    VkMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+
+    vkCmdPipelineBarrier(
+        pCommandBuffer->GetDeviceHandle(),
+        VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+        VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+        0,
+        1, &barrier,
+        0, nullptr,
+        0, nullptr
+    );
 }
 
 ruya::VulkanTopLevelAccelerationStructure::~VulkanTopLevelAccelerationStructure()

@@ -1,22 +1,26 @@
 #include "engine.h"
 
 #include <core/log.h>
+#include <core/thread_affinity.h>
 
 void ruya::Engine::Init()
 {
 	engineRunning = false;
-	engineState = EEngineState::EngineUpdate;
 
 	ryAssetManager = std::make_unique<RyAssetManager>();
-	ryAssetManager->Init();
 
 	window = std::make_unique<Window>();
-	graphics = std::make_unique<Graphics>(window.get());
+	graphics = std::make_unique<Graphics>();
+	graphics->Init(window.get());
+
+	physics = std::make_unique<Physics>();
 
 	renderDataWriteBuffer = std::make_unique <RenderData>();
 	renderDataReadBuffer = std::make_unique <RenderData>();
 
 	bEditorMode = false;
+
+	jobScheduler = std::make_unique<job_system::JobScheduler>();
 
 	RUYA_LOG_INFO("Engine instance initilized.");
 }
@@ -35,29 +39,42 @@ ruya::App* ruya::Engine::GetApp()
 
 void ruya::Engine::Run()
 {
+	tracy::SetThreadName("Main Thread (Worker 0)");
+
+	PinThreadToCore(0);
+
 	engineRunning = true;
 
 	if (app != nullptr)
 		app->Init();
 
-	renderThread = std::thread(&ruya::Engine::OnRender, this);
+	jobScheduler->Init();
+
+	asyncJobWorker = std::thread(&ruya::Engine::AsyncJobWorkerLoop, this);
 
 	OnUpdate();
 }
 
 void ruya::Engine::WaitEngineShutdown()
 {
-	if (renderThread.joinable())
+	jobScheduler->Wait(renderSubmitWorkerCounter);
+
 	{
-		renderThread.join();
+		std::lock_guard<std::mutex> lock(asyncJobQueueMutex);
+		stopAsyncJobWorkerThread = true;
 	}
+	asyncJobWorkerCondition.notify_all();
+
+	asyncJobWorker.join();
 
 	graphics->WaitGraphicsDeviceIdle();
 }
 
 void ruya::Engine::Shutdown()
 {
+	jobScheduler.reset();
 	app.reset();
+	physics.reset();
 	graphics.reset();
 	window.reset();
 	ryAssetManager.reset();
@@ -73,6 +90,11 @@ ruya::Graphics* ruya::Engine::GetGraphics()
 	return graphics.get();
 }
 
+ruya::Physics* ruya::Engine::GetPhysics() const
+{
+	return physics.get();
+}
+
 ruya::App* ruya::Engine::GetApp() const
 {
 	return app.get();
@@ -81,6 +103,20 @@ ruya::App* ruya::Engine::GetApp() const
 ruya::RyAssetManager* ruya::Engine::GetAssetManager() const
 {
 	return ryAssetManager.get();
+}
+
+ruya::job_system::JobScheduler* ruya::Engine::GetJobScheduler() const
+{
+	return jobScheduler.get();
+}
+
+void ruya::Engine::QueueAsyncJob(std::function<void()> func)
+{
+	{
+		std::lock_guard<std::mutex> lock(asyncJobQueueMutex);
+		asyncJobQueue.push(std::move(func));
+	}
+	asyncJobWorkerCondition.notify_one();
 }
 
 ruya::RenderData* ruya::Engine::GetRenderDataWriteBuffer() const
@@ -104,36 +140,71 @@ void ruya::Engine::SetEditorDrawFunction(std::function<void()> func)
 	editorDrawFunction = func;
 }
 
+void ruya::Engine::StartApp()
+{
+	if (appState == AppState::AppReady)
+		appState = AppState::AppStart;
+}
+
+void ruya::Engine::PauseApp()
+{
+	if (appState == AppState::AppUpdate)
+		appState = AppState::AppPause;
+}
+
+void ruya::Engine::ContinueApp()
+{
+	if (appState == AppState::AppPause)
+		appState = AppState::AppUpdate;
+}
+
+void ruya::Engine::ShutdownApp()
+{
+	if (appState == AppState::AppUpdate || appState == AppState::AppPause)
+		appState = AppState::AppShutdown;
+}
+
+ruya::AppState ruya::Engine::GetAppState()
+{
+	return appState;
+}
+
 void ruya::Engine::OnUpdate()
 {
 	window->ResetDeltaTime();
+
+	appState = AppState::AppReady;
 
 	while (engineRunning)
 	{
 		window->UpdateDeltaTime();
 		window->PollEvents();
 
-		if (engineState == EEngineState::GameStart)
+		if (appState == AppState::AppStart)
 		{
-			app->OnStart();
-			engineState = EEngineState::GameUpdate;
+			job_system::Counter counter{};
+			jobScheduler->Submit(counter, [p = app.get()] {p->OnStart();});
+			jobScheduler->Wait(counter);
+			appState = AppState::AppUpdate;
 		}
-		else if (engineState == EEngineState::GameUpdate)
+		else if (appState == AppState::AppUpdate)
 		{
-			app->OnUpdate();
+			job_system::Counter counter{};
+			jobScheduler->Submit(counter, [p = app.get()] {p->OnUpdate();});
+			jobScheduler->Wait(counter);
 		}
-		else if (engineState == EEngineState::GameShutdown)
+		else if (appState == AppState::AppShutdown)
 		{
-			app->OnShutdown();
+			job_system::Counter counter{};
+			jobScheduler->Submit(counter, [p = app.get()] {p->OnShutdown();});
+			jobScheduler->Wait(counter);
+			appState = AppState::AppReady;
 		}
 
-		app->OnEngineUpdate();
-
-		renderFinished.acquire();
-
-		if (bEditorMode)
 		{
-			editorUpdateFunction();
+			job_system::Counter counter{};
+			jobScheduler->Submit(counter, [p = app.get()] {p->OnEngineUpdate();});
+			jobScheduler->Wait(counter);
 		}
 
 		if (window->ShouldClose())
@@ -143,17 +214,13 @@ void ruya::Engine::OnUpdate()
 
 		std::swap(renderDataReadBuffer, renderDataWriteBuffer);
 		renderDataWriteBuffer.reset(new RenderData());
-		graphics->SubmitGraphicsJobQueue();
 
-		renderDataReady.release();
-	}
-}
+		jobScheduler->Wait(renderSubmitWorkerCounter);
 
-void ruya::Engine::OnRender()
-{
-	while (engineRunning)
-	{
-		renderDataReady.acquire();
+		if (bEditorMode)
+		{
+			editorUpdateFunction();
+		}
 
 		if (!window->IsWindowMinimized())
 		{
@@ -170,11 +237,40 @@ void ruya::Engine::OnRender()
 					graphics->EndEditorDraw();
 				}
 
-				graphics->EndFrame();
+				jobScheduler->Submit(renderSubmitWorkerCounter, [p = graphics.get()] {p->EndFrame();});
 			}
 		}
 
-		renderFinished.release();
+		FrameMark;
+	}
+}
+
+void ruya::Engine::AsyncJobWorkerLoop()
+{
+	tracy::SetThreadName("Async Thread");
+
+	while (true)
+	{
+		std::function<void()> func;
+
+		{
+			std::unique_lock<std::mutex> lock(asyncJobQueueMutex);
+
+			asyncJobWorkerCondition.wait(lock, [this]() {return !asyncJobQueue.empty() || stopAsyncJobWorkerThread;});
+
+			if (stopAsyncJobWorkerThread && asyncJobQueue.empty())
+			{
+				return;
+			}
+
+			func = std::move(asyncJobQueue.front());
+			asyncJobQueue.pop();
+		}
+
+		if (func)
+		{
+			func();
+		}
 	}
 }
 

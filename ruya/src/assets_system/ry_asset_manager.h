@@ -1,60 +1,118 @@
 #pragma once
 #include <string>
-#include <cstdint>
 #include <unordered_map>
-#include <fstream>
-#include <queue>
 #include <memory>
+#include <filesystem>
+#include <optional>
 
-#include <cereal/cereal.hpp>
-#include <cereal/types/queue.hpp>
-#include <entt/entt.hpp>
+#include <vector>
+#include <cstdint>
 
+#include <ktx/ktx.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+#include <core/uuid.h>
 #include <core/ry_id.h>
-#include <app_framework/scene.h>
 
-#include <cereal/archives/json.hpp>
+#include <app_framework/scene.h>
+#include <graphics/vertex.h>
 
 #include "ry_asset.h"
+#include "ry_material.h"
 
-namespace ruya 
+namespace tinygltf { struct Model; }
+
+namespace ruya
 {
-	class RyAssetManager 
-	{
-	public:
-		RyAssetManager();
-		~RyAssetManager();
+    enum class TextureFormat
+    {
+        SRGB,
+        Linear,
+        NormalMap
+    };
 
-		RyAssetManager(const RyAssetManager&) = delete;
-		RyAssetManager& operator=(const RyAssetManager&) = delete;
+    struct RyMeshData
+    {
+        std::vector<Vertex>   vertices;
+        std::vector<uint32_t> indices;
+    };
 
-		void Init();
-		void ScanAssets();
+    struct RyMeshInfo
+    {
+        glm::vec3 aabbMin = glm::vec3(0.0f);
+        glm::vec3 aabbMax = glm::vec3(0.0f);
+        glm::vec3 initialPosition = glm::vec3(0.0f);
+    };
 
-		bool SerializeAsset(RyID assetID);
-		RyAsset DeserializeAsset(const std::string& path);
+    class RyAssetManager
+    {
+    public:
+        RyAssetManager() = default;
+        ~RyAssetManager() = default;
 
-		RyID CreateAsset(const std::string& name, RyAssetType type, RyAssetSourceExtension sourceExtension, const std::string& path);
-		RyAsset* GetAsset(RyID assetID);
+        RyAssetManager(const RyAssetManager&) = delete;
+        RyAssetManager& operator=(const RyAssetManager&) = delete;
 
-        bool SerializeScene(Scene& scene, const std::string& path);
-        std::unique_ptr<Scene> DeserializeScene(const std::string& path);
+        void ScanAssets();
+        void SaveAsset(UUID uuid);
+        void SaveAllAssets();
 
-		void SerializeCurrentState();
-		void LoadState();
+        UUID CreateAsset(const std::string& name, RyAssetType type, const std::string& directory);
+        RyAsset* TryGetAsset(UUID uuid);
+        RyAsset* GetAssetByPath(const std::string& assetName);
+        void DestroyAsset(UUID uuid);
+        bool RenameAsset(UUID uuid, const std::string& newName);
+        bool MoveAsset(UUID uuid, const std::string& newDirectory);
+        bool MoveFolder(const std::string& folderRelative, const std::string& newParentDirectory);
 
-		template<typename Archive>
-		friend void serialize(Archive& archive, RyAssetManager& ryAssetManager);
+        UUID ImportPNG(const std::string& sourcePath,
+            const std::string& importDirectory,
+            TextureFormat format);
 
-	private:
-		std::unordered_map<RyID, std::unique_ptr<RyAsset>> assetRegistry;
-		RyID nextAssetID;
-		std::queue<RyID> availableAssetIDs;
-	};
+        bool ReimportTexture(UUID assetUUID, TextureFormat newFormat);
 
-	template<typename Archive>
-	void serialize(Archive& archive, RyAssetManager& ryAssetManager)
-	{
-		archive(CEREAL_NVP(ryAssetManager.nextAssetID), ryAssetManager.availableAssetIDs);
-	}
+        ktxTexture2* LoadKTX2Header(UUID assetUUID);
+
+        ktxTexture2* LoadKTX2(UUID assetUUID);
+
+        void ImportGLTF(const std::string& path, const std::string& importDirectory);
+
+        std::optional<RyMeshData> LoadGLTF(UUID assetUUID);
+        std::optional<RyMeshInfo> GetGLTFInfo(UUID assetUUID);
+
+        std::optional<RyMaterial> LoadRyMaterial(UUID assetUUID);
+        bool SaveMaterial(UUID assetUUID, const RyMaterial& material);
+
+        bool SaveScene(UUID assetUUID, Scene* scene);
+        std::unique_ptr<Scene> LoadScene(UUID assetUUID);
+
+    private:
+        bool SerializeAsset(UUID uuid);
+        RyAsset DeserializeAsset(const std::string& path);
+
+        bool LoadGLBModel(const std::string& path, tinygltf::Model& outModel);
+
+        std::filesystem::path ResolveResourcePath(const RyAsset& asset) const;
+
+        struct GLTFPrimitiveRef { int meshIndex; int primIndex; };
+        std::vector<GLTFPrimitiveRef> EnumerateGLTFPrimitives(const tinygltf::Model& model);
+
+        bool DecodeGLTFPrimitive(const tinygltf::Model& model,
+            int meshIndex, int primIndex,
+            RyMeshData* outData,
+            RyMeshInfo* outInfo);
+
+        bool WritePrimitiveToGLB(const tinygltf::Model& srcModel,
+            int meshIndex, int primIndex,
+            const std::string& outGlbPath);
+
+        bool EncodePNGToKTX2(const std::string& pngPath,
+            const std::string& outKtxPath,
+            TextureFormat format);
+
+    private:
+        std::unordered_map<UUID, std::unique_ptr<RyAsset>> assetRegistry;
+    };
 }

@@ -7,24 +7,19 @@
 #include <memory>
 #include <filesystem>
 
+#include <tracy/tracy/Tracy.hpp>
+
 #include <core/log.h>
 #include <window/window.h>
+#include <assets_system/ry_asset_manager.h>
 #include <graphics/graphics.h>
+#include <physics/physics.h>
 #include <graphics/render_data.h>
 #include <app_framework/app.h>
-#include <assets_system/ry_asset_manager.h>
+#include <core/job_system.h>
 
 namespace ruya
 {
-	enum class EEngineState
-	{
-		EngineUpdate,
-		GameStart,
-		GameUpdate,
-		GamePause,
-		GameShutdown,
-	};
-
 	class Engine
 	{
 	public:
@@ -45,8 +40,12 @@ namespace ruya
 
 		Window* GetWindow();
 		Graphics* GetGraphics();
+		Physics* GetPhysics() const;
 		App* GetApp() const;
 		RyAssetManager* GetAssetManager() const;
+		job_system::JobScheduler* GetJobScheduler() const;
+
+		void QueueAsyncJob(std::function<void()> func);
 
 		RenderData* GetRenderDataWriteBuffer() const;
 		RenderData* GetRenderDataReadBuffer() const;
@@ -54,24 +53,36 @@ namespace ruya
 		void SetEditorUpdateFunction(std::function<void()> func);
 		void SetEditorDrawFunction(std::function<void()> func);
 
+		void StartApp();
+		void PauseApp();
+		void ContinueApp();
+		void ShutdownApp();
+		AppState GetAppState();
+
 	private:
 		void OnUpdate();
-		void OnRender();
+		void AsyncJobWorkerLoop();
 
 	private:
 		bool engineRunning;
-		EEngineState engineState;
 
 		std::unique_ptr<Window> window;
-		std::unique_ptr<Graphics> graphics;
 		std::unique_ptr<RyAssetManager> ryAssetManager;
+		std::unique_ptr<Physics> physics;
+		std::unique_ptr<Graphics> graphics;
 		std::unique_ptr<App> app;
+		AppState appState;
 
-		std::thread renderThread;
-		std::counting_semaphore<1> renderDataReady{ 0 };
-		std::counting_semaphore<1> renderFinished{ 1 };
+		std::unique_ptr<job_system::JobScheduler> jobScheduler;
+		std::thread asyncJobWorker;
+		std::queue<std::function<void()>> asyncJobQueue;
+		std::mutex asyncJobQueueMutex;
+		std::condition_variable asyncJobWorkerCondition;
+		bool stopAsyncJobWorkerThread = false;
+
 		std::unique_ptr<RenderData> renderDataWriteBuffer;
 		std::unique_ptr<RenderData> renderDataReadBuffer;
+		job_system::Counter renderSubmitWorkerCounter{};
 
 		bool bEditorMode;
 		std::function<void()> editorUpdateFunction;

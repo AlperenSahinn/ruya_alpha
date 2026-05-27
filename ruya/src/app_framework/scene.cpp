@@ -1,17 +1,20 @@
 #include "Scene.h"
-#include <Engine.h>
+
+#include <engine.h>
 #include "id_component.h"
 #include "relationship_component.h"
 #include "transform_component.h"
 
 #include "render_system.h"
 #include "lighting_system.h"
+#include "physics_system.h"
 
 ruya::Scene::Scene(const std::string& name)
     : name(name)
 {
-    AddSceneSystem<RenderSystem>("RenderSystem");
+    AddSceneSystem<PhysicsSystem>("PhysicsSystem");
     AddSceneSystem<LightingSystem>("LightingSystem");
+    AddSceneSystem<RenderSystem>("RenderSystem");
 }
 
 const std::string& ruya::Scene::GetName() const
@@ -64,6 +67,10 @@ void ruya::Scene::RemoveSceneSystem(const std::string& systemName)
 
 void ruya::Scene::OnStart()
 {
+    ZoneScoped;
+    const std::string fullName = "Scene: " + name;
+    ZoneName(fullName.c_str(), fullName.size());
+
     for (auto& [type, systemPtr] : sceneSystems)
     {
         systemPtr->OnStart();
@@ -72,6 +79,10 @@ void ruya::Scene::OnStart()
 
 void ruya::Scene::OnUpdate()
 {
+    ZoneScoped;
+    const std::string fullName = "Scene: " + name;
+    ZoneName(fullName.c_str(), fullName.size());
+
     for (auto& [type, systemPtr] : sceneSystems)
     {
         systemPtr->OnUpdate();
@@ -80,6 +91,10 @@ void ruya::Scene::OnUpdate()
 
 void ruya::Scene::OnShutdown()
 {
+    ZoneScoped;
+    const std::string fullName = "Scene: " + name;
+    ZoneName(fullName.c_str(), fullName.size());
+
     for (auto& [type, systemPtr] : sceneSystems)
     {
         systemPtr->OnShutdown();
@@ -88,6 +103,10 @@ void ruya::Scene::OnShutdown()
 
 void ruya::Scene::OnEngineUpdate()
 {
+    ZoneScoped;
+    const std::string fullName = "Scene: " + name;
+    ZoneName(fullName.c_str(), fullName.size());
+
     for (auto& [type, systemPtr] : sceneSystems)
     {
         systemPtr->OnEngineUpdate();
@@ -96,6 +115,10 @@ void ruya::Scene::OnEngineUpdate()
 
 void ruya::Scene::OnSceneLoad()
 {
+    ZoneScoped;
+    const std::string fullName = "Scene: " + name;
+    ZoneName(fullName.c_str(), fullName.size());
+
     for (auto& [type, systemPtr] : sceneSystems)
     {
         systemPtr->OnSceneLoad();
@@ -104,6 +127,10 @@ void ruya::Scene::OnSceneLoad()
 
 void ruya::Scene::OnSceneUnload()
 {
+    ZoneScoped;
+    const std::string fullName = "Scene: " + name;
+    ZoneName(fullName.c_str(), fullName.size());
+
     for (auto& [type, systemPtr] : sceneSystems)
     {
         systemPtr->OnSceneUnload();

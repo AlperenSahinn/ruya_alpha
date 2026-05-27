@@ -73,13 +73,47 @@ namespace ruya
 
 		void BindDescriptorSets(const std::vector<VkDescriptorSet>& descriptorSets, VkPipelineLayout pipelineLayout, VkPipelineBindPoint pipelineBindPoint);
 
+		void BindVertexBuffer(const VulkanBuffer& vertexBuffer);
 		void BindIndexBuffer(const VulkanBuffer& indexBuffer);
 
 		void DispatchComputePipeline(VulkanComputePipeline* pComputePipeline, const std::vector<VkDescriptorSet>& descriptorSets, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ);
 
-		void UpdateTLAS(VulkanTopLevelAccelerationStructure* pTLAS, const std::unordered_map<RyID, std::unique_ptr<VulkanBottomLevelAccelerationStructureInstance>>& blasInstances);
+		void UpdateTLAS(VulkanTopLevelAccelerationStructure* pTLAS, const std::vector<std::pair<uint32_t, VulkanBottomLevelAccelerationStructureInstance*>>& blasInstances);
 
 		void TraceRays(VulkanRayTracingPipeline* pRayTracingPipeline, const std::vector<VkDescriptorSet>& descriptorSets, uint32_t width, uint32_t height);
+
+		void ReleaseBufferOwnership(
+			VulkanBuffer* pBuffer,
+			uint32_t srcQueueFamily,
+			uint32_t dstQueueFamily,
+			VkPipelineStageFlags srcStageMask,
+			VkAccessFlags srcAccessMask);
+
+		void AcquireBufferOwnership(
+			VulkanBuffer* pBuffer,
+			uint32_t srcQueueFamily,
+			uint32_t dstQueueFamily,
+			VkPipelineStageFlags dstStageMask,
+			VkAccessFlags dstAccessMask);
+
+		void ReleaseImageOwnership(
+			VulkanImage* pImage,
+			uint32_t srcQueueFamily,
+			uint32_t dstQueueFamily,
+			VkImageLayout newLayout,
+			VkPipelineStageFlags srcStageMask,
+			VkAccessFlags srcAccessMask,
+			VkImageSubresourceRange subresourceRange);
+
+		void AcquireImageOwnership(
+			VulkanImage* pImage,
+			uint32_t srcQueueFamily,
+			uint32_t dstQueueFamily,
+			VkImageLayout oldLayout,
+			VkImageLayout newLayout,
+			VkPipelineStageFlags dstStageMask,
+			VkAccessFlags dstAccessMask,
+			VkImageSubresourceRange subresourceRange);
 
 	private:
 		VkCommandBuffer deviceHandle;

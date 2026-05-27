@@ -23,7 +23,7 @@ namespace ruya
 		void WriteDescriptorBuffer(int binding, VkBuffer buffer, size_t size, size_t offset, VkDescriptorType type);
 		void WriteDescriptorBuffers(int binding, std::vector<VkDescriptorBufferInfo> descriptorBufferInfos, VkDescriptorType type);
 		void WriteDescriptorAccelerationStructure(int binding, VkAccelerationStructureKHR accelerationStructureKHR);
-		void UpdateDescriptors(VkDescriptorSet pDescriptorSet);
+		void UpdateDescriptors(VkDescriptorSet& pDescriptorSet);
 
 		void WriteAndUpdateDescriptorImageByIndex(VkDescriptorSet descriptorSet, uint32_t index, VkDescriptorImageInfo& descriptorImageInfo);
 		void WriteAndUpdateDescriptorBufferByIndex(VkDescriptorSet descriptorSet, uint32_t index, VkDescriptorBufferInfo& descriptorBufferInfo, VkDescriptorType descriptorType);

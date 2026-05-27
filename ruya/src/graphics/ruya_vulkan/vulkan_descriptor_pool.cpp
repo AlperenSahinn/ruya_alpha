@@ -35,25 +35,26 @@ ruya::VulkanDescriptorPool::VulkanDescriptorPool::~VulkanDescriptorPool()
 	vkDestroyDescriptorPool(device, deviceHandle, nullptr);
 }
 
-VkDescriptorSet ruya::VulkanDescriptorPool::AllocateDescriptorSet(VkDescriptorSetLayout layout, bool variableDescriptorCount, uint32_t descriptorCount)
+VkDescriptorSet ruya::VulkanDescriptorPool::AllocateDescriptorSet(VkDescriptorSetLayout layout, uint32_t descriptorCount, bool variableDescriptorCount)
 {
-	VkDescriptorSet descriptorSet;
-
 	VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
 	descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	descriptorSetAllocateInfo.descriptorPool = deviceHandle;
 	descriptorSetAllocateInfo.descriptorSetCount = 1;
 	descriptorSetAllocateInfo.pSetLayouts = &layout;
 
+	VkDescriptorSetVariableDescriptorCountAllocateInfo descriptorSetVariableDescriptorCountAllocateInfo = {};
+
 	if (variableDescriptorCount)
 	{
-		VkDescriptorSetVariableDescriptorCountAllocateInfo descriptorSetVariableDescriptorCountAllocateInfo = {};
 		descriptorSetVariableDescriptorCountAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
 		descriptorSetVariableDescriptorCountAllocateInfo.descriptorSetCount = 1;
 		descriptorSetVariableDescriptorCountAllocateInfo.pDescriptorCounts = &descriptorCount;
 
 		descriptorSetAllocateInfo.pNext = &descriptorSetVariableDescriptorCountAllocateInfo;
 	}
+
+	VkDescriptorSet descriptorSet;
 
 	CHECK_VKRESULT(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &descriptorSet));
 

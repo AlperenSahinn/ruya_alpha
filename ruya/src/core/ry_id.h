@@ -3,7 +3,7 @@
 #include <string>
 #include <ostream>
 
-#include <cereal/archives/json.hpp>
+#include <nlohmann_json/json.hpp>
 #include <spdlog/fmt/fmt.h>
 
 #include "assert.h"
@@ -39,6 +39,8 @@ namespace ruya
             return id != cInvalidRyID;
         }
 
+        static RyID Invalid() { return RyID{}; }
+
         inline bool operator==(RyID ryID) const
         {
             return id == ryID.id;
@@ -54,18 +56,19 @@ namespace ruya
             return id < ryID.id;
         }
 
-        template<typename Archive>
-        friend void serialize(Archive& archive, RyID& ryID);
+        friend void to_json(nlohmann::json& j, const RyID& ryID) 
+        {
+            j = nlohmann::json{ {"RyID", ryID.id} };
+        }
+
+        friend void from_json(const nlohmann::json& j, RyID& ryID) 
+        {
+            j.at("RyID").get_to(ryID.id);
+        }
 
     private:
         uint64_t id;
     };
-
-    template<typename Archive>
-    void serialize(Archive& archive, RyID& ryID)
-    {
-        archive(cereal::make_nvp("RyID", ryID.id));
-    }
 
     inline std::ostream& operator<<(std::ostream& os, RyID ryID)
     {

@@ -1,23 +1,22 @@
 #pragma once
 #include <cstdint>
 
-#include <cereal/archives/json.hpp>
+#include <nlohmann_json/json.hpp>
 
 #include <core/ry_id.h>
+#include <core/uuid.h>
 
 namespace ruya
 {
 	struct RenderComponent
 	{
-		RyID renderGeometryID;
-		RyID meshID;
-		RyID materialID;
+		UUID meshUUID = UUID::Invalid();
+		UUID materialUUID = UUID::Invalid();
 		bool draw = true;
-	};
 
-	template<typename Archive>
-	void serialize(Archive& archive, RenderComponent& component)
-	{
-		archive(component.renderGeometryID, component.meshID, component.materialID, component.draw);
-	}
+		RyID renderItemID = RyID::Invalid();
+		bool allocated = false;
+
+		NLOHMANN_DEFINE_TYPE_INTRUSIVE(RenderComponent, meshUUID, materialUUID, draw)
+	};
 }

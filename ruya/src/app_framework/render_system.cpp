@@ -1,10 +1,8 @@
 #include "render_system.h"
 #include <iostream>
 
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtx/quaternion.hpp> 
 #include <glm/gtx/transform.hpp>
@@ -16,144 +14,111 @@
 
 #include "transform_component.h"
 #include "render_component.h"
-#include "relationship_component.h"
-#include "model_3d_component.h"
+
+void ruya::RenderSystem::OnStart()
+{
+    auto transformEntities = scene->GetSceneViewByComponentsType<TransformComponent>();
+
+    for (auto [entity, transformComp] : transformEntities.each())
+    {
+        transformComp.updatePosition = transformComp.position;
+        transformComp.updateRotation = transformComp.rotation;
+        transformComp.updateScale = transformComp.scale;
+        transformComp.updateTransform = transformComp.transform;
+    }
+
+    auto renderEntities = scene->GetSceneViewByComponentsType<RenderComponent, TransformComponent>();
+
+    for (auto [entity, renderComponent, transformComp] : renderEntities.each())
+    {
+        if (renderComponent.renderItemID.IsValid() && renderComponent.allocated)
+        {
+            engine->GetRenderDataWriteBuffer()->updateRenderItemTransformCommands.push_back({ renderComponent.renderItemID, transformComp.transform });
+        }
+    }
+}
+
+void ruya::RenderSystem::OnShutdown()
+{
+    auto transformEntities = scene->GetSceneViewByComponentsType<TransformComponent>();
+
+    for (auto [entity, transformComp] : transformEntities.each())
+    {
+        transformComp.updatePosition = transformComp.position;
+        transformComp.updateRotation = transformComp.rotation;
+        transformComp.updateScale = transformComp.scale;
+        transformComp.updateTransform = transformComp.transform;
+    }
+
+    auto renderEntities = scene->GetSceneViewByComponentsType<RenderComponent, TransformComponent>();
+
+    for (auto [entity, renderComponent, transformComp] : renderEntities.each())
+    {
+        if (renderComponent.renderItemID.IsValid() && renderComponent.allocated)
+        {
+            engine->GetRenderDataWriteBuffer()->updateRenderItemTransformCommands.push_back({ renderComponent.renderItemID, transformComp.transform });
+        }
+    }
+}
 
 void ruya::RenderSystem::OnEngineUpdate()
 {
-    auto modelLoadingEntities = scene->GetSceneViewByComponentsType<Model3DComponent>();
-
-    for (auto [entity, model3DComponent] : modelLoadingEntities.each())
-    {
-        if (model3DComponent.isLoaded == false)
-        {
-            engine->GetGraphics()->LoadModel3D(model3DComponent.modelAssetID);
-            model3DComponent.isLoaded = true;
-        }
-    }
-
     auto renderGeometryCreationEntities = scene->GetSceneViewByComponentsType<RenderComponent, TransformComponent>();
 
     for (auto [entity, renderComp, transformComp] : renderGeometryCreationEntities.each())
     {
-        if (!renderComp.renderGeometryID.IsValid())
+        if (!renderComp.allocated)
         {
-            glm::vec3 rotationRadians = glm::radians(transformComp.rotation);
-            glm::quat rotationQuat = glm::quat(rotationRadians);
+            glm::quat rotationQuat = transformComp.rotation;
             glm::mat4 transform = glm::translate(glm::mat4(1.0f), transformComp.position)
                 * glm::toMat4(rotationQuat)
                 * glm::scale(glm::mat4(1.0f), transformComp.scale);
 
             transformComp.transform = transform;
 
-            renderComp.renderGeometryID = engine->GetGraphics()->CreateRenderGeometry(transformComp.transform, renderComp.meshID, renderComp.materialID);
+            renderComp.renderItemID = engine->GetGraphics()->CreateRenderItem(transformComp.transform, renderComp.meshUUID, renderComp.materialUUID);
+            renderComp.allocated = true;
         }
     }
 
 	RenderData* renderData = engine->GetRenderDataWriteBuffer();
-	renderData->camera.frameNumber = frameNumber;
+    renderData->camera.prevViewproj = engine->GetRenderDataReadBuffer()->camera.viewproj;
+    renderData->camera.prevViewPos = engine->GetRenderDataReadBuffer()->camera.viewPos;
+    renderData->camera.frameNumber = frameNumber;
+
 	frameNumber++;
-
-	auto entities = scene->GetSceneViewByComponentsType<TransformComponent, RelationshipComponent>();
-
-    for (auto [entity, transformComp, relationshipComp] : entities.each())
-    {
-        if (relationshipComp.parentEntity == entt::null)
-        {
-            UpdateTransformRecursive(entity);
-        }
-    }
 }
 
 void ruya::RenderSystem::OnSceneLoad()
 {
-    auto modelLoadingEntities = scene->GetSceneViewByComponentsType<Model3DComponent>();
-
-    for (auto [entity, model3DComponent] : modelLoadingEntities.each())
-    {
-        if (model3DComponent.isLoaded == false)
-        {
-            engine->GetGraphics()->LoadModel3D(model3DComponent.modelAssetID);
-            model3DComponent.isLoaded = true;
-        }
-    }
-
     auto entities = scene->GetSceneViewByComponentsType<RenderComponent, TransformComponent>();
 
 	for (auto [entity, renderComp, transformComp] : entities.each())
 	{
-		glm::vec3 rotationRadians = glm::radians(transformComp.rotation);
-		glm::quat rotationQuat = glm::quat(rotationRadians);
-		glm::mat4 transform = glm::translate(glm::mat4(1.0f), transformComp.position)
-			* glm::toMat4(rotationQuat)
-			* glm::scale(glm::mat4(1.0f), transformComp.scale);
+        if (!renderComp.allocated)
+        {
+            glm::quat rotationQuat = glm::quat(transformComp.rotation);
+            glm::mat4 transform = glm::translate(glm::mat4(1.0f), transformComp.position)
+                * glm::toMat4(rotationQuat)
+                * glm::scale(glm::mat4(1.0f), transformComp.scale);
 
-        transformComp.transform = transform;
+            transformComp.transform = transform;
 
-		renderComp.renderGeometryID = engine->GetGraphics()->CreateRenderGeometry(transformComp.transform, renderComp.meshID, renderComp.materialID);;
+            renderComp.renderItemID = engine->GetGraphics()->CreateRenderItem(transformComp.transform, renderComp.meshUUID, renderComp.materialUUID);
+            renderComp.allocated = true;
+        }
 	}
 }
 
 void ruya::RenderSystem::OnSceneUnload()
 {
-    auto modelLoadingEntities = scene->GetSceneViewByComponentsType<Model3DComponent>();
+    auto entities = scene->GetSceneViewByComponentsType<RenderComponent>();
 
-    for (auto [entity, model3DComponent] : modelLoadingEntities.each())
+    for (auto [entity, renderComp] : entities.each())
     {
-        if (model3DComponent.isLoaded == true)
+        if (renderComp.allocated)
         {
-            engine->GetGraphics()->UnloadModel3D(model3DComponent.modelAssetID);
-            model3DComponent.isLoaded = false;
+            engine->GetGraphics()->DestroyRenderItem(renderComp.renderItemID);
         }
-    }
-
-    for(auto& pair : engine->GetGraphics()->GetRenderGeometries())
-    {
-        engine->GetGraphics()->DestroyRenderGeometry(pair.first);
-    }
-}
-
-void ruya::RenderSystem::UpdateTransformRecursive(EntityID entity)
-{
-    if (entity == entt::null) return;
-
-    TransformComponent* transformComp = scene->TryGetComponent<TransformComponent>(entity);
-    RelationshipComponent* relationshipComp = scene->TryGetComponent<RelationshipComponent>(entity);
-
-    glm::vec3 rotationRadians = glm::radians(transformComp->rotation);
-    glm::quat rotationQuat = glm::quat(rotationRadians);
-
-    glm::mat4 localTransform = glm::translate(glm::mat4(1.0f), transformComp->position)
-        * glm::toMat4(rotationQuat)
-        * glm::scale(glm::mat4(1.0f), transformComp->scale);
-
-    if (relationshipComp->parentEntity != entt::null)
-    {
-        TransformComponent* parentTransformComp = scene->TryGetComponent<TransformComponent>(
-            static_cast<uint32_t>(relationshipComp->parentEntity)
-        );
-        transformComp->transform = parentTransformComp->transform * localTransform;
-    }
-    else
-    {
-        transformComp->transform = localTransform;
-    }
-
-    if (RenderComponent* renderComponent = scene->TryGetComponent<RenderComponent>(entity))
-    {
-        if (renderComponent->meshID.IsValid() && renderComponent->renderGeometryID.IsValid() && renderComponent->materialID.IsValid())
-        {
-            engine->GetGraphics()->UpdateRenderGeometry(renderComponent->renderGeometryID, transformComp->transform, renderComponent->meshID, renderComponent->materialID, renderComponent->draw);
-        }
-    }
-
-    if (relationshipComp->firstChildEntity != entt::null)
-    {
-        UpdateTransformRecursive(relationshipComp->firstChildEntity);
-    }
-
-    if (relationshipComp->nextEntity != entt::null)
-    {
-        UpdateTransformRecursive(relationshipComp->nextEntity);
     }
 }

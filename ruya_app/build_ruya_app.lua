@@ -1,12 +1,11 @@
 project "ruya_app"
     kind "StaticLib"
-    language "C++"
-    cppdialect "C++20"
-    targetdir "bin/%{cfg.buildcfg}"
-    staticruntime "off"
-    characterset "Unicode"
 
-    files { "src/**.h", "src/**.cpp" }
+    files 
+    { 
+        "src/**.h", 
+        "src/**.cpp" 
+    }
 
     includedirs
     {
@@ -22,7 +21,9 @@ project "ruya_app"
     {
         -- Third party
         "../third_party/lib/mimalloc/%{cfg.buildcfg}",
-        "../third_party/lib/sdl3/%{cfg.buildcfg}"
+        "../third_party/lib/sdl3/%{cfg.buildcfg}",
+        "../third_party/lib/jolt/%{cfg.buildcfg}",
+        "../third_party/lib/ktx/%{cfg.buildcfg}"
     }
 
     links
@@ -31,24 +32,7 @@ project "ruya_app"
 
         -- Third party
         "mimalloc.dll.lib",
-        "SDL3"
+        "SDL3",
+        "Jolt",
+        "ktx"
     }
-
-    targetdir ("../bin/" .. OutputDir .. "/%{prj.name}")
-    objdir ("../intermediates/" .. OutputDir .. "/%{prj.name}")
-
-    filter "system:windows"
-        systemversion "latest"
-        defines { "WINDOWS" }
-
-    filter "configurations:debug"
-        defines { "DEBUG" }
-        runtime "Debug"
-        optimize "Off"
-        symbols "On"
-
-    filter "configurations:release"
-        defines { "RELEASE" }
-        runtime "Release"
-        optimize "On"
-        symbols "Off"

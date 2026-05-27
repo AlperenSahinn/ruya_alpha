@@ -2,42 +2,57 @@
 #include <string>
 #include <cstdint>
 
-#include <cereal/archives/json.hpp>
+#include <nlohmann_json/json.hpp>
+#include <magic_enum/magic_enum.hpp>
+#include <glm/glm.hpp>
 
-#include <core/ry_id.h>
+#include <core/uuid.h>
+#include <core/nlohmann_glm.h>
 
 namespace ruya
 {
-	enum class RyAssetType
-	{
-		Folder,
-		Scene,
-		Prefab,
-		Model,
-		Image2D,
-		Sound
-	};
+    enum class RyAssetType
+    {
+        RyScene,
+        GLTF,
+        KTX2,
+        RyMaterial
+    };
 
-	enum class RyAssetSourceExtension
-	{
-		ryscene,
-		ryprefab,
-		gltf,
-		png
-	};
+    struct RyAsset
+    {
+        UUID uuid = UUID::Invalid();
+        RyAssetType ryAssetType;
+        std::string assetName = ""; // example: "player_texture"
+        std::string directory = ""; // example: "textures/characters"
+        std::string sourcePath = ""; // source path of orginal file for reimporting
+    };
 
-	struct RyAsset
-	{
-		std::string name;
-		RyID id;
-		RyAssetType type;
-		RyAssetSourceExtension sourceExtension;
-		std::string path; //relative to assets dir.
-	};
+    inline void to_json(nlohmann::json& j, const RyAsset& asset)
+    {
+        j = nlohmann::json{
+            {"uuid", asset.uuid},
+            {"ryAssetType", std::string(magic_enum::enum_name(asset.ryAssetType))},
+            {"assetName", asset.assetName},
+            {"directory", asset.directory},
+            {"sourcePath", asset.sourcePath}
+        };
+    }
 
-	template<typename Archive>
-	void serialize(Archive& archive, RyAsset& ryAsset)
-	{
-		archive(CEREAL_NVP(ryAsset.name), CEREAL_NVP(ryAsset.id), CEREAL_NVP(ryAsset.type), CEREAL_NVP(ryAsset.sourceExtension), CEREAL_NVP(ryAsset.path));
-	}
+    inline void from_json(const nlohmann::json& j, RyAsset& asset)
+    {
+        j.at("uuid").get_to(asset.uuid);
+
+        std::string typeName;
+        j.at("ryAssetType").get_to(typeName);
+
+        if (auto typeValue = magic_enum::enum_cast<RyAssetType>(typeName))
+        {
+            asset.ryAssetType = *typeValue;
+        }
+
+        j.at("assetName").get_to(asset.assetName);
+        j.at("directory").get_to(asset.directory);
+        j.at("sourcePath").get_to(asset.sourcePath);
+    }
 }

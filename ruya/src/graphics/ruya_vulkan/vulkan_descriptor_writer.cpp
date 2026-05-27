@@ -1,6 +1,10 @@
 #include "vulkan_descriptor_writer.h"
 
+#include "vulkan_helpers.h"
+
 #include "vulkan_context.h"
+
+
 
 ruya::VulkanDescriptorWriter::VulkanDescriptorWriter(VulkanContext* pVulkanContext)
 {
@@ -111,7 +115,7 @@ void ruya::VulkanDescriptorWriter::WriteDescriptorAccelerationStructure(int bind
 	writeDescriptorSets.push_back(writeDescriptorSet);
 }
 
-void ruya::VulkanDescriptorWriter::UpdateDescriptors(VkDescriptorSet pDescriptorSet)
+void ruya::VulkanDescriptorWriter::UpdateDescriptors(VkDescriptorSet& pDescriptorSet)
 {
 	if (writeDescriptorSets.size() <= 0)
 		return;
@@ -150,6 +154,6 @@ void ruya::VulkanDescriptorWriter::WriteAndUpdateDescriptorBufferByIndex(VkDescr
 	writeDescriptorSet.pBufferInfo = &descriptorBufferInfo;
 	writeDescriptorSet.pImageInfo = nullptr;
 	writeDescriptorSet.pTexelBufferView = nullptr;
-
+	
 	vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, nullptr);
 }

@@ -23,7 +23,7 @@ namespace ruya
 		VulkanDescriptorPool(const VulkanDescriptorPool&) = delete;
 		VulkanDescriptorPool& operator=(const VulkanDescriptorPool&) = delete;
 
-		VkDescriptorSet AllocateDescriptorSet(VkDescriptorSetLayout layout, bool variableDescriptorCount = true, uint32_t descriptorCount = 1);
+		VkDescriptorSet AllocateDescriptorSet(VkDescriptorSetLayout layout, uint32_t descriptorCount = 1, bool variableDescriptorCount = false);
 		void FreeDescriptorSet(VkDescriptorSet descriptorSet);
 		void Reset();
 

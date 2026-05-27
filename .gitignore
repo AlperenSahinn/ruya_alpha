@@ -1,6 +1,9 @@
 #Binaries
 bin/
 intermediates/
+debugger_settings/
+
+*.log
 
 #Visual Studio files and folder
 .vs/

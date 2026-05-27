@@ -28,6 +28,11 @@ namespace ruya
 		void SetWindowResized(bool b);
 		bool IsWindowMinimized() const;
 
+		void ChangeFrameRate(uint32_t frameRateMode);
+		bool IsFrameRateChanged();
+		void SetFrameRateChanged(bool b);
+		uint32_t GetFrameRateMode();
+
 		uint32_t GetWindowWidth() const;
 		uint32_t GetWindowHeight() const;
 
@@ -52,6 +57,8 @@ namespace ruya
 		bool shouldClose;
 		bool windowResized;
 		bool windowMinimized;
+		bool frameRateChanged;
+		uint32_t frameRateMode; //0: unlimeted, 1: V-Sync
 
 		Uint64 now;
 		Uint64 last;

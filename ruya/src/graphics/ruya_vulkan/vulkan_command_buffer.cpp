@@ -2,6 +2,8 @@
 #include "vulkan_helpers.h"
 #include "vulkan_context.h"
 
+#include <glm/gtc/type_ptr.hpp>
+
 ruya::VulkanCommandBuffer::VulkanCommandBuffer(VulkanContext* pVulkanContext, VkCommandPool pComandPool, VkCommandBufferLevel level)
 {
 	VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
@@ -43,9 +45,9 @@ void ruya::VulkanCommandBuffer::SetViewPort(uint32_t width, uint32_t height)
 {
 	VkViewport viewport = {};
 	viewport.x = 0;
-	viewport.y = 0;
-	viewport.width = width;
-	viewport.height = height;
+	viewport.y = static_cast<float>(height);
+	viewport.width = static_cast<float>(width);
+	viewport.height = -static_cast<float>(height);
 	viewport.minDepth = 0.f;
 	viewport.maxDepth = 1.f;
 
@@ -292,6 +294,13 @@ void ruya::VulkanCommandBuffer::BindDescriptorSets(
 	vkCmdBindDescriptorSets(deviceHandle, pipelineBindPoint, pipelineLayout, 0, (uint32_t)descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 }
 
+void ruya::VulkanCommandBuffer::BindVertexBuffer(const VulkanBuffer& vertexBuffer)
+{
+	std::vector<VkBuffer> buffers = { vertexBuffer.GetDeviceHandle() };
+	VkDeviceSize off = 0;
+	vkCmdBindVertexBuffers(deviceHandle, 0, 1, buffers.data(), &off);
+}
+
 void ruya::VulkanCommandBuffer::BindIndexBuffer(const VulkanBuffer& indexBuffer)
 {
 	vkCmdBindIndexBuffer(deviceHandle, indexBuffer.GetDeviceHandle(), 0, VK_INDEX_TYPE_UINT32);
@@ -303,46 +312,62 @@ void ruya::VulkanCommandBuffer::DispatchComputePipeline(
 	uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 {
 	vkCmdBindPipeline(deviceHandle, VK_PIPELINE_BIND_POINT_COMPUTE, pComputePipeline->GetDeviceHandle());
-	vkCmdBindDescriptorSets(deviceHandle, VK_PIPELINE_BIND_POINT_COMPUTE, pComputePipeline->GetPipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 	vkCmdDispatch(deviceHandle, groupCountX, groupCountY, groupCountZ);
 }
 
-void ruya::VulkanCommandBuffer::UpdateTLAS(VulkanTopLevelAccelerationStructure* pTLAS, const std::unordered_map<ruya::RyID, std::unique_ptr<VulkanBottomLevelAccelerationStructureInstance>>& blasInstances)
+void ruya::VulkanCommandBuffer::UpdateTLAS(VulkanTopLevelAccelerationStructure* pTLAS, const std::vector<std::pair<uint32_t, VulkanBottomLevelAccelerationStructureInstance*>>& blasInstances)
 {
-	if (blasInstances.size() != pTLAS->GetInstanceCount())
+	uint32_t instanceCount = pTLAS->GetInstanceCount();
+	if (blasInstances.size() != instanceCount)
 	{
 		return;
 	}
 
-	std::vector<VkAccelerationStructureInstanceKHR> tlasInstances;
-	tlasInstances.reserve(pTLAS->GetInstanceCount());
+	VkAccelerationStructureInstanceKHR* mappedData = static_cast<VkAccelerationStructureInstanceKHR*>(pTLAS->GetBLASInstancesBuffer()->MapMemory());
 
-	for (auto& pair : blasInstances)
+	for (uint32_t i = 0; i < instanceCount; ++i)
 	{
-		VulkanBottomLevelAccelerationStructureInstance* blasInstance = pair.second.get();
+		const auto& pair = blasInstances[i];
+		const VulkanBottomLevelAccelerationStructureInstance* blasInstance = pair.second;
 
-		const glm::mat4& transform = blasInstance->transform;
+		VkAccelerationStructureInstanceKHR& asInstance = mappedData[i];
 
-		VkAccelerationStructureInstanceKHR asInstance = {};
-		glm::mat4 transposed = glm::transpose(transform);
-		memcpy(&asInstance.transform.matrix[0][0], &transposed[0][0], sizeof(float) * 4);
-		memcpy(&asInstance.transform.matrix[1][0], &transposed[1][0], sizeof(float) * 4);
-		memcpy(&asInstance.transform.matrix[2][0], &transposed[2][0], sizeof(float) * 4);
+		const float* m = glm::value_ptr(blasInstance->transform);
+		asInstance.transform.matrix[0][0] = m[0]; asInstance.transform.matrix[0][1] = m[4]; asInstance.transform.matrix[0][2] = m[8];  asInstance.transform.matrix[0][3] = m[12];
+		asInstance.transform.matrix[1][0] = m[1]; asInstance.transform.matrix[1][1] = m[5]; asInstance.transform.matrix[1][2] = m[9];  asInstance.transform.matrix[1][3] = m[13];
+		asInstance.transform.matrix[2][0] = m[2]; asInstance.transform.matrix[2][1] = m[6]; asInstance.transform.matrix[2][2] = m[10]; asInstance.transform.matrix[2][3] = m[14];
 
-		asInstance.instanceCustomIndex = blasInstance->instanceCustomIndex;
-
-		asInstance.accelerationStructureReference = blasInstance->blas->GetDeviceAddress();
-
-		asInstance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+		asInstance.instanceCustomIndex = pair.first;
 		asInstance.mask = 0xFF;
 		asInstance.instanceShaderBindingTableRecordOffset = 0;
+		asInstance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 
-		tlasInstances.emplace_back(asInstance);
+		if (blasInstance->blas != nullptr)
+		{
+			asInstance.accelerationStructureReference = blasInstance->blas->GetDeviceAddress();
+		}
+		else
+		{
+			asInstance.accelerationStructureReference = 0;
+		}
 	}
 
-	void* data = pTLAS->GetBLASInstancesBuffer()->MapMemory();
-	memcpy(data, tlasInstances.data(), pTLAS->GetInstanceCount() * sizeof(VkAccelerationStructureInstanceKHR));
 	pTLAS->GetBLASInstancesBuffer()->UnmapMemory();
+
+	VkMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+
+	vkCmdPipelineBarrier(
+		deviceHandle,
+		VK_PIPELINE_STAGE_HOST_BIT,
+		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+		0,
+		1, &barrier,
+		0, nullptr,
+		0, nullptr
+	);
 
 	VkAccelerationStructureGeometryInstancesDataKHR instancesData = {};
 	instancesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -355,8 +380,7 @@ void ruya::VulkanCommandBuffer::UpdateTLAS(VulkanTopLevelAccelerationStructure* 
 
 	VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
 	buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
-	buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
-		VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+	buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
 	buildInfo.geometryCount = 1;
 	buildInfo.pGeometries = &asGeometry;
 	buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
@@ -365,7 +389,7 @@ void ruya::VulkanCommandBuffer::UpdateTLAS(VulkanTopLevelAccelerationStructure* 
 	buildInfo.dstAccelerationStructure = pTLAS->GetDeviceHandle();
 	buildInfo.scratchData.deviceAddress = pTLAS->GetScratchBuffer()->GetDeviceAddress();
 
-	VkAccelerationStructureBuildRangeInfoKHR rangeInfo{ pTLAS->GetInstanceCount(), 0, 0, 0 };
+	VkAccelerationStructureBuildRangeInfoKHR rangeInfo{ instanceCount, 0, 0, 0 };
 	const VkAccelerationStructureBuildRangeInfoKHR* pRangeInfo = &rangeInfo;
 
 	vkCmdBuildAccelerationStructuresKHR(deviceHandle, 1, &buildInfo, &pRangeInfo);
@@ -384,4 +408,132 @@ void ruya::VulkanCommandBuffer::TraceRays(VulkanRayTracingPipeline* pRayTracingP
 		height,
 		1
 	);
+}
+
+void ruya::VulkanCommandBuffer::ReleaseBufferOwnership(
+	VulkanBuffer* pBuffer,
+	uint32_t srcQueueFamily,
+	uint32_t dstQueueFamily,
+	VkPipelineStageFlags srcStageMask,
+	VkAccessFlags srcAccessMask)
+{
+	VkBufferMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	barrier.srcAccessMask = srcAccessMask;
+	barrier.dstAccessMask = 0;
+	barrier.srcQueueFamilyIndex = srcQueueFamily;
+	barrier.dstQueueFamilyIndex = dstQueueFamily;
+	barrier.buffer = pBuffer->GetDeviceHandle();
+	barrier.offset = 0;
+	barrier.size = VK_WHOLE_SIZE;
+
+	vkCmdPipelineBarrier(
+		deviceHandle,
+		srcStageMask,
+		VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		0,
+		0, nullptr,
+		1, &barrier,
+		0, nullptr
+	);
+}
+
+void ruya::VulkanCommandBuffer::AcquireBufferOwnership(
+	VulkanBuffer* pBuffer,
+	uint32_t srcQueueFamily,
+	uint32_t dstQueueFamily,
+	VkPipelineStageFlags dstStageMask,
+	VkAccessFlags dstAccessMask)
+{
+	VkBufferMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	barrier.srcAccessMask = 0;
+	barrier.dstAccessMask = dstAccessMask;
+	barrier.srcQueueFamilyIndex = srcQueueFamily;
+	barrier.dstQueueFamilyIndex = dstQueueFamily;
+	barrier.buffer = pBuffer->GetDeviceHandle();
+	barrier.offset = 0;
+	barrier.size = VK_WHOLE_SIZE;
+
+	vkCmdPipelineBarrier(
+		deviceHandle,
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		dstStageMask,
+		0,
+		0, nullptr,
+		1, &barrier,
+		0, nullptr
+	);
+
+	pBuffer->stageMask = dstStageMask;
+	pBuffer->accessMask = dstAccessMask;
+}
+
+void ruya::VulkanCommandBuffer::ReleaseImageOwnership(
+	VulkanImage* pImage,
+	uint32_t srcQueueFamily,
+	uint32_t dstQueueFamily,
+	VkImageLayout newLayout,
+	VkPipelineStageFlags srcStageMask,
+	VkAccessFlags srcAccessMask,
+	VkImageSubresourceRange subresourceRange)
+{
+	VkImageMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.srcAccessMask = srcAccessMask;
+	barrier.dstAccessMask = 0;
+	barrier.oldLayout = pImage->imageLayout;
+	barrier.newLayout = newLayout;
+	barrier.srcQueueFamilyIndex = srcQueueFamily;
+	barrier.dstQueueFamilyIndex = dstQueueFamily;
+	barrier.image = pImage->GetDeviceHandle();
+	barrier.subresourceRange = subresourceRange;
+
+	vkCmdPipelineBarrier(
+		deviceHandle,
+		srcStageMask,
+		VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		0,
+		0, nullptr,
+		0, nullptr,
+		1, &barrier
+	);
+
+	pImage->imageLayout = newLayout;
+}
+
+void ruya::VulkanCommandBuffer::AcquireImageOwnership(
+	VulkanImage* pImage,
+	uint32_t srcQueueFamily,
+	uint32_t dstQueueFamily,
+	VkImageLayout oldLayout,
+	VkImageLayout newLayout,
+	VkPipelineStageFlags dstStageMask,
+	VkAccessFlags dstAccessMask,
+	VkImageSubresourceRange subresourceRange)
+{
+	VkImageMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.srcAccessMask = 0;
+	barrier.dstAccessMask = dstAccessMask;
+	barrier.oldLayout = oldLayout;
+	barrier.newLayout = newLayout;
+	barrier.srcQueueFamilyIndex = srcQueueFamily;
+	barrier.dstQueueFamilyIndex = dstQueueFamily;
+	barrier.image = pImage->GetDeviceHandle();
+	barrier.subresourceRange = subresourceRange;
+
+	vkCmdPipelineBarrier(
+		deviceHandle,
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		dstStageMask,
+		0,
+		0, nullptr,
+		0, nullptr,
+		1, &barrier
+	);
+
+	pImage->imageLayout = newLayout;
+	pImage->stageMask = dstStageMask;
+	pImage->accessMask = dstAccessMask;
 }

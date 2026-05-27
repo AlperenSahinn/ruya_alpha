@@ -1,6 +1,8 @@
 #pragma once
-#include <cereal/archives/json.hpp>
+#include <nlohmann_json/json.hpp>
 #include <entt/entt.hpp>
+
+#include "entity_id.h"
 
 namespace ruya
 {
@@ -9,11 +11,7 @@ namespace ruya
         EntityID parentEntity{ entt::null };
         EntityID firstChildEntity{ entt::null };
         EntityID nextEntity{ entt::null };
-    };
 
-    template<typename Archive>
-    void serialize(Archive& archive, RelationshipComponent& component)
-    {
-        archive(component.parentEntity, component.firstChildEntity, component.nextEntity);
-    }
+        NLOHMANN_DEFINE_TYPE_INTRUSIVE(RelationshipComponent, parentEntity, firstChildEntity, nextEntity)
+    };
 }

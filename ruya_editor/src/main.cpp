@@ -2,6 +2,7 @@
 
 #include <core/utils.h>
 #include <core/log.h>
+#include <filesystem>
 
 #include <engine.h>
 #include <ruya_app.h>
@@ -37,6 +38,8 @@ int main()
 	engine->Shutdown();
 
 	RUYA_LOG_INFO("Engine closing with zero errors.");
+
+	ruya::ShutdownLogger();
 
 	return 0;
 }

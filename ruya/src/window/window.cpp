@@ -14,6 +14,9 @@ ruya::Window::Window(uint32_t windowWidth, uint32_t windowHeight, std::string wi
     windowResized = false;
     windowMinimized = false;
 
+    frameRateMode = 1;
+    frameRateChanged = false;
+
     Create();
 
     RUYA_LOG_INFO("Window initialized.");
@@ -83,6 +86,27 @@ void ruya::Window::SetWindowResized(bool b)
 bool ruya::Window::IsWindowMinimized() const
 {
     return windowMinimized;
+}
+
+void ruya::Window::ChangeFrameRate(uint32_t frameRateMode)
+{
+    this->frameRateMode = frameRateMode;
+    frameRateChanged = true;
+}
+
+bool ruya::Window::IsFrameRateChanged()
+{
+    return frameRateChanged;
+}
+
+void ruya::Window::SetFrameRateChanged(bool b)
+{
+    frameRateChanged = b;
+}
+
+uint32_t ruya::Window::GetFrameRateMode()
+{
+    return frameRateMode;
 }
 
 uint32_t ruya::Window::GetWindowWidth() const

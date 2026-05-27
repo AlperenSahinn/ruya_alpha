@@ -4,20 +4,13 @@
 #include <core/log.h>
 #include <core/hash_code_generator.h>
 #include <core/assert.h>
+#include <assets_system/ry_asset_manager.h>
 
 #include "ruya_vulkan/vulkan_descriptor_writer.h"
 
-ruya::Graphics::Graphics(Window* window)
+ruya::Graphics::Graphics()
 {
 	vulkanContext = std::make_unique<VulkanContext>();
-	vulkanContext->Init(window, true);
-
-	CreateGeneralResources();
-	SetFrameBufferExtent(2560, 1440);
-	CreateGBufferPipeline();
-	CreateDirectionalLightShadowPipeline();
-	CreateLightPassPipeline();
-
 	RUYA_LOG_INFO("[Graphics] Graphics instance created");
 }
 
@@ -29,57 +22,62 @@ ruya::Graphics::~Graphics()
 	RUYA_LOG_INFO("[Graphics] Graphics instance destroyed");
 }
 
+void ruya::Graphics::Init(Window* window)
+{
+	vulkanContext->Init(window, true);
+
+	CreateGeneralResources();
+
+	frameBufferWidth = 1600;
+	frameBufferHeight = 900;
+
+	defaultPipeline = std::make_unique<GraphicsPipeline>(ASSETS_DIR + "/ruya_files/graphics_pipelines/default_pipeline.json");
+
+	CreateDebugLinePipeline();
+}
+
 ruya::VulkanContext* ruya::Graphics::GetVulkanContext() const
 {
 	return vulkanContext.get();
 }
 
-void ruya::Graphics::RecordGraphicsJob(std::unique_ptr<GraphicsJob> graphicsJob)
-{
-	recordedJobs.push_back(std::move(graphicsJob));
-}
-
-void ruya::Graphics::SubmitGraphicsJobQueue()
-{
-	std::swap(recordedJobs, jobsToDispatch);
-	recordedJobs.clear();
-}
-
 void ruya::Graphics::BeginFrame()
 {
 	vulkanContext->BeginFrame();
-
-	for (std::unique_ptr<GraphicsJob>& graphicsJob : jobsToDispatch)
-	{
-		graphicsJob->Execute();
-	}
 }
 
 void ruya::Graphics::Draw()
 {
 	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->GeneralMemoryBarrier(
-		VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
-		VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+		VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+		VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
 		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
 		VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
 
-	if(tlas)
-		UpdateTLAS(vulkanContext->GetCurrentFrameResource()->GetCommandBuffer());
+	SyncRenderItemTransforms();
 
-	frameBuffers[frameIndex]->UpdateDescriptors(vulkanContext.get());
+	RenderData* renderData = engine->GetRenderDataReadBuffer();
+
+	for (UpdateRenderItemTransformCommand& transformCommand : renderData->updateRenderItemTransformCommands)
+		UpdateRenderItemTransform(transformCommand.renderItemRyID, transformCommand.transform);
+
+	for (UpdateRenderItemMaterialCommand& updateRenderItemMaterialCommand : renderData->updateRenderItemMaterialCommand)
+		UpdateRenderItemMaterial(updateRenderItemMaterialCommand.renderItemRyID, updateRenderItemMaterialCommand.materialUUID);
+
+	UpdateDescriptors();
 
 	VkExtent2D extent{ frameBufferWidth, frameBufferHeight };
 
 	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->SetViewPort(extent.width, extent.height);
 
-	DispatchGBufferPipeline();
+	DestroyTLAS(frameIndex);
+	CreateTLAS(frameIndex);
 
-	if(tlas)
-	{
-		DispatchDirectionalLightShadowPipeline();
-	}
+	//UpdateTLAS(vulkanContext->GetCurrentFrameResource()->GetCommandBuffer(), frameIndex);
 
-	DispatchLightPassPipeline();
+	defaultPipeline->Dispatch();
+
+	DispatchDebugLinePipeline();
 }
 
 void ruya::Graphics::BeginEditorDraw()
@@ -92,9 +90,9 @@ void ruya::Graphics::BeginEditorDraw()
 	colorRange.layerCount = 1;
 
 	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetLightPassImage(),
+		defaultPipeline->GetOutputImage(frameIndex, "toneMapPassResultImage")->GetVulkanImage(),
 		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL,
+		VK_IMAGE_LAYOUT_GENERAL,
 		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
 		colorRange
 	);
@@ -141,531 +139,373 @@ void ruya::Graphics::WaitGraphicsDeviceIdle()
 	vulkanContext->WaitDeviceIdle();
 }
 
-void ruya::Graphics::LoadModel3D(RyID modelAssetID)
-{
-	ENGINE_ASSERT_MSG(modelAssetID.IsValid(), "[Graphics] LoadModel3D failed. modelAssetID is invalid.");
-	ENGINE_ASSERT_MSG(modelAssetID.IsValid(), "[Graphics] LoadModel3D failed. modelAssetID is invalid.");
+ruya::RyID ruya::Graphics::CreateMeshBuffer(UUID ryMeshUUID)
+{	
+	ENGINE_ASSERT_MSG(ryMeshUUID.IsValid(), "[Graphics] CreateMeshBuffer failed. ryMeshUUID is invalid.");
 
-	if (model3Ds.contains(modelAssetID))
+	if(uuid2MeshBufferRyID.contains(ryMeshUUID))
 	{
-		model3DUsageCount[modelAssetID]++;
-		return;
+		meshBuffersUsageCounts[uuid2MeshBufferRyID[ryMeshUUID]]++;
+		return uuid2MeshBufferRyID[ryMeshUUID];
 	}
 
-	model3Ds.insert({ modelAssetID, std::make_unique<Model3D>(modelAssetID) });
-	model3DUsageCount.insert({ modelAssetID, 1 });
-}
+	RyID ryID = RyID::Invalid();
 
-ruya::Model3D* ruya::Graphics::GetModel3D(RyID modelAssetID)
-{
-	ENGINE_ASSERT_MSG(modelAssetID.IsValid(), "[Graphics] GetModel3D failed. modelAssetID is invalid.");
-	ENGINE_ASSERT_MSG(model3Ds.contains(modelAssetID), "[Graphics] GetModel3D failed.There is no Model3D exist with this modelAssetID {}", std::to_string(modelAssetID).c_str());
-
-	return model3Ds[modelAssetID].get();
-}
-
-void ruya::Graphics::UnloadModel3D(RyID modelAssetID)
-{
-	ENGINE_ASSERT_MSG(modelAssetID.IsValid(), "[Graphics] UnloadModel3D failed. modelAssetID is invalid.");
-	ENGINE_ASSERT_MSG(model3Ds.contains(modelAssetID), "[Graphics] UnloadModel3D failed.There is no Model3D exist with this modelAssetID {}", std::to_string(modelAssetID).c_str());
-
-	model3DUsageCount[modelAssetID]--;
-
-	if (model3DUsageCount[modelAssetID] == 0)
+	if (availableMeshBufferRyIDs.empty())
 	{
-		model3Ds.erase(modelAssetID);
-		model3DUsageCount.erase(modelAssetID);
-	}
-}
-
-ruya::RyID ruya::Graphics::CreateMesh(const std::vector<Vertex>& vertices, const std::vector <uint32_t>& indices, const std::string& name)
-{
-	RyID id(hash_code_generator::XXHash64(name));
-
-	if(meshes.contains(id))
-	{
-		RUYA_LOG_WARN("There is a Mesh with this name.");
-		return id;
-	}
-
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
-	
-	graphicsJob->AddJob([this, id, vertices, indices]() {
-		meshes.insert({ id, std::make_unique<Mesh>(vertices, indices) });
-		meshUsageCount.insert({ id, 0 });
-		});
-
-	RecordGraphicsJob(std::move(graphicsJob));
-
-	return id;
-}
-
-void ruya::Graphics::DestroyMesh(RyID meshID)
-{
-	ENGINE_ASSERT_MSG(meshID.IsValid(), "[Graphics] DestroyMesh failed. meshID is invalid.");
-
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
-
-	graphicsJob->AddJob([this, meshID]() {
-		ENGINE_ASSERT_MSG(meshes.contains(meshID), "[Graphics] DestroyMesh failed. There is no Mesh exist with this meshID {}", std::to_string(meshID).c_str());
-		meshes[meshID]->Unload();
-		meshes.erase(meshID);
-		meshUsageCount.erase(meshID);
-		});
-
-	RecordGraphicsJob(std::move(graphicsJob));
-}
-
-void ruya::Graphics::LoadMesh(RyID meshID)
-{
-	ENGINE_ASSERT_MSG(meshID.IsValid(), "[Graphics] LoadMesh failed. meshID is invalid.");
-	ENGINE_ASSERT_MSG(meshes.contains(meshID), "[Graphics] LoadMesh failed. There is no Mesh exist with this meshID {}", std::to_string(meshID).c_str());
-
-	meshUsageCount[meshID]++;
-	if (meshUsageCount[meshID] == 1)
-	{
-		meshes[meshID]->Load();
-	}
-}
-
-void ruya::Graphics::UnloadMesh(RyID meshID)
-{
-	ENGINE_ASSERT_MSG(meshID.IsValid(), "[Graphics] UnloadMesh failed. meshID is invalid.");
-	ENGINE_ASSERT_MSG(meshes.contains(meshID), "[Graphics] UnloadMesh failed. There is no Mesh exist with this meshID {}", std::to_string(meshID).c_str());
-
-	if (meshUsageCount[meshID] == 0)
-		return;
-
-	meshUsageCount[meshID]--;
-
-	if (meshUsageCount[meshID] == 0)
-	{
-		meshes[meshID]->Unload();
-	}
-}
-
-ruya::RyID ruya::Graphics::CreateImage2D(const std::string& imagePath, ImageType type, ImageSampler sampler, const std::string& name)
-{
-	RyID id(hash_code_generator::XXHash64(name));
-
-	if (image2Ds.contains(id))
-	{
-		RUYA_LOG_WARN("There is a Image2D with this name.");
-		return id;
-	}
-
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
-
-	graphicsJob->AddJob([this, id, imagePath, type, sampler]() {
-		image2Ds.insert({ id, std::make_unique<Image2D>(imagePath, type, sampler) });
-		image2DUsageCount.insert({ id, 0 });
-		});
-
-	RecordGraphicsJob(std::move(graphicsJob));
-
-	return id;
-}
-
-void ruya::Graphics::DestroyImage2D(RyID imageID)
-{
-	ENGINE_ASSERT_MSG(imageID.IsValid(), "[Graphics] DestroyImage2D failed. imageID is invalid.");
-
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
-
-	graphicsJob->AddJob([this, imageID]() {
-		ENGINE_ASSERT_MSG(image2Ds.contains(imageID), "[Graphics] DestroyImage2D failed. There is no Image2D exist with this imageID {}", std::to_string(imageID).c_str());
-		image2Ds[imageID]->Unload();
-		availableImage2DsDescriptorImageInfosIndexes.push(image2Ds[imageID]->GetDescriptorIndex());
-		image2Ds.erase(imageID);
-		image2DUsageCount.erase(imageID);
-		});
-
-	RecordGraphicsJob(std::move(graphicsJob));
-}
-
-void ruya::Graphics::LoadImage2D(RyID imageID)
-{
-	ENGINE_ASSERT_MSG(imageID.IsValid(), "[Graphics] LoadImage2D failed. imageID is invalid.");
-	ENGINE_ASSERT_MSG(image2Ds.contains(imageID), "[Graphics] LoadImage2D failed. There is no Image2D exist with this imageID {}", std::to_string(imageID).c_str());
-
-	image2DUsageCount[imageID]++;
-
-	if (image2DUsageCount[imageID] == 1)
-	{
-		image2Ds[imageID]->Load();
-
-		VkDescriptorImageInfo descriptorImageInfo = {};
-		descriptorImageInfo.imageLayout = image2Ds[imageID]->GetVulkanImage()->imageLayout;
-		descriptorImageInfo.sampler = linearSampler;
-		descriptorImageInfo.imageView = image2Ds[imageID]->GetVulkanImage()->GetImageView();
-
-		uint32_t descriptorIndex;
-
-		if (availableImage2DsDescriptorImageInfosIndexes.empty())
-		{
-			descriptorIndex = image2DsDescriptorImageInfosIndexCounter;
-			image2DsDescriptorImageInfosIndexCounter++;
-		}
-		else
-		{
-			descriptorIndex = availableImage2DsDescriptorImageInfosIndexes.front();
-			availableImage2DsDescriptorImageInfosIndexes.pop();
-		}
-
-		image2Ds[imageID]->SetDescriptorIndex(descriptorIndex);
-
-		std::unique_ptr<VulkanDescriptorWriter> descriptorWriter = std::make_unique<VulkanDescriptorWriter>(vulkanContext.get());
-		descriptorWriter->WriteAndUpdateDescriptorImageByIndex(image2DsDescriptorSet, descriptorIndex, descriptorImageInfo);
-	}
-}
-
-void ruya::Graphics::UnloadImage2D(RyID imageID)
-{
-	ENGINE_ASSERT_MSG(imageID.IsValid(), "[Graphics] UnloadImage2D failed. imageID is invalid.");
-	ENGINE_ASSERT_MSG(image2Ds.contains(imageID), "[Graphics] UnloadImage2D failed. There is no Image2D exist with this imageID {}", std::to_string(imageID).c_str());
-
-	if (image2DUsageCount[imageID] == 0)
-		return;
-
-	image2DUsageCount[imageID]--;
-
-	if (image2DUsageCount[imageID] == 0)
-	{
-		uint32_t descriptorIndex = image2Ds[imageID]->GetDescriptorIndex();
-		image2Ds[imageID]->Unload();
-		availableImage2DsDescriptorImageInfosIndexes.push(descriptorIndex);
-	}
-}
-
-ruya::RyID ruya::Graphics::CreatePBROpaqueMaterial(const std::string& name, RyID albedoImageId, RyID normalImageId, RyID metallicRoughnessImageId)
-{
-	RyID id(hash_code_generator::XXHash64(name));
-
-	if (pbrOpaqueMaterials.contains(id))
-	{
-		RUYA_LOG_WARN("There is a PBROpaqueMaterial with this name.");
-		return id;
-	}
-
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
-
-	graphicsJob->AddJob([this, id, albedoImageId, normalImageId, metallicRoughnessImageId]() {
-		PBROpaqueMaterial pbrOpaqueMaterial = {};
-		pbrOpaqueMaterial.albedoImageId = albedoImageId;
-		pbrOpaqueMaterial.normalImageId = normalImageId;
-		pbrOpaqueMaterial.metallicRoughnessImageId = metallicRoughnessImageId;
-
-		pbrOpaqueMaterials.insert({ id, std::move(pbrOpaqueMaterial) });
-		pbrOpaqueMaterialsUsageCount.insert({ id, 0 });
-		});
-
-	RecordGraphicsJob(std::move(graphicsJob));
-
-	return id;
-}
-
-void ruya::Graphics::UpdatePBROpaqueMaterial(RyID materialId, RyID albedoImageId, RyID normalImageId, RyID metallicRoughnessImageId)
-{
-	ENGINE_ASSERT_MSG(materialId.IsValid(), "[Graphics] UpdatePBROpaqueMaterial failed. materialId is invalid.");
-
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
-
-	graphicsJob->AddJob([this, materialId, albedoImageId, normalImageId, metallicRoughnessImageId]() {
-		ENGINE_ASSERT_MSG(pbrOpaqueMaterials.contains(materialId), "[Graphics] UpdatePBROpaqueMaterial failed. There is no PBROpaqueMaterial exist with this materialId {}", std::to_string(materialId).c_str());
-		PBROpaqueMaterial& pbrOpaqueMaterial = pbrOpaqueMaterials[materialId];
-		pbrOpaqueMaterial.albedoImageId = albedoImageId;
-		pbrOpaqueMaterial.normalImageId = normalImageId;
-		pbrOpaqueMaterial.metallicRoughnessImageId = metallicRoughnessImageId;
-		});
-
-	RecordGraphicsJob(std::move(graphicsJob));
-}
-
-void ruya::Graphics::DestroyPBROpaqueMaterial(RyID materialId)
-{
-	ENGINE_ASSERT_MSG(materialId.IsValid(), "[Graphics] DestroyPBROpaqueMaterial failed. materialId is invalid.");
-
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
-
-	graphicsJob->AddJob([this, materialId]() {
-		ENGINE_ASSERT_MSG(pbrOpaqueMaterials.contains(materialId), "[Graphics] DestroyPBROpaqueMaterial failed. There is no PBROpaqueMaterial exist with this materialId {}", std::to_string(materialId).c_str());
-		PBROpaqueMaterial& pbrOpaqueMaterial = pbrOpaqueMaterials[materialId];
-
-		UnloadImage2D(pbrOpaqueMaterial.albedoImageId);
-		UnloadImage2D(pbrOpaqueMaterial.normalImageId);
-		UnloadImage2D(pbrOpaqueMaterial.metallicRoughnessImageId);
-
-		availablePBROpaqueMaterialsDescriptorBufferInfosIndexes.push(pbrOpaqueMaterial.descriptorIndex);
-		pbrOpaqueMaterials.erase(materialId);
-		});
-
-	RecordGraphicsJob(std::move(graphicsJob));
-}
-
-void ruya::Graphics::LoadPBROpaqueMaterial(RyID materialId)
-{
-	ENGINE_ASSERT_MSG(materialId.IsValid(), "[Graphics] LoadPBROpaqueMaterial failed. materialId is invalid.");
-	ENGINE_ASSERT_MSG(pbrOpaqueMaterials.contains(materialId), "[Graphics] LoadPBROpaqueMaterial failed. There is no PBROpaqueMaterial exist with this materialId {}", std::to_string(materialId).c_str());
-
-	pbrOpaqueMaterialsUsageCount[materialId]++;
-
-	if (pbrOpaqueMaterialsUsageCount[materialId] == 1)
-	{
-		PBROpaqueMaterial& pbrOpaqueMaterial = pbrOpaqueMaterials[materialId];
-
-		LoadImage2D(pbrOpaqueMaterial.albedoImageId);
-		LoadImage2D(pbrOpaqueMaterial.normalImageId);
-		LoadImage2D(pbrOpaqueMaterial.metallicRoughnessImageId);
-
-		PBROpaqueMaterialGPU pbrOpaqueMaterialGPU;
-		pbrOpaqueMaterialGPU.albedoImageDescriptorIndex = image2Ds[pbrOpaqueMaterial.albedoImageId]->GetDescriptorIndex();
-		pbrOpaqueMaterialGPU.normalImageDescriptorIndex = image2Ds[pbrOpaqueMaterial.normalImageId]->GetDescriptorIndex();
-		pbrOpaqueMaterialGPU.metallicRoughnessImageDescriptorIndex = image2Ds[pbrOpaqueMaterial.metallicRoughnessImageId]->GetDescriptorIndex();
-
-		pbrOpaqueMaterialBuffers.insert(
-			{
-				materialId,
-				std::make_unique<VulkanBuffer>(
-					vulkanContext.get(),
-					sizeof(PBROpaqueMaterialGPU),
-					VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-					VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-					VmaMemoryUsage::VMA_MEMORY_USAGE_GPU_ONLY)
-			}
-		);
-
-		VkDescriptorBufferInfo descriptorBufferInfo = {};
-		descriptorBufferInfo.buffer = pbrOpaqueMaterialBuffers[materialId]->GetDeviceHandle();
-		descriptorBufferInfo.offset = 0;
-		descriptorBufferInfo.range = VK_WHOLE_SIZE;
-
-		uint32_t descriptorIndex;
-
-		if (availablePBROpaqueMaterialsDescriptorBufferInfosIndexes.empty())
-		{
-			descriptorIndex = pbrOpaqueMaterialsDescriptorBufferInfosIndexCounter;
-			pbrOpaqueMaterialsDescriptorBufferInfosIndexCounter++;
-		}
-		else
-		{
-			descriptorIndex = availablePBROpaqueMaterialsDescriptorBufferInfosIndexes.front();
-			availablePBROpaqueMaterialsDescriptorBufferInfosIndexes.pop();
-		}
-
-		pbrOpaqueMaterial.descriptorIndex = descriptorIndex;
-
-		std::unique_ptr<VulkanDescriptorWriter> descriptorWriter = std::make_unique<VulkanDescriptorWriter>(vulkanContext.get());
-		descriptorWriter->WriteAndUpdateDescriptorBufferByIndex(pbrOpaqueMaterialsDescriptorSet, descriptorIndex, descriptorBufferInfo, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-
-		std::unique_ptr<VulkanBuffer> uploadBuffer = std::make_unique<VulkanBuffer>(vulkanContext.get(), sizeof(PBROpaqueMaterialGPU), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
-		uploadBuffer->UploadData(&pbrOpaqueMaterialGPU, sizeof(PBROpaqueMaterialGPU));
-
-		vulkanContext->ImmediateSubmitCommand([&](VulkanCommandBuffer* commandBuffer)
-			{
-				VkBufferCopy bufferCopy = {};
-				bufferCopy.size = sizeof(PBROpaqueMaterialGPU);
-				bufferCopy.srcOffset = 0;
-				bufferCopy.dstOffset = 0;
-
-				commandBuffer->CopyBufferToBuffer(*uploadBuffer, pbrOpaqueMaterialBuffers[materialId].get(), bufferCopy);
-			}
-		);
-	}
-}
-
-void ruya::Graphics::UnloadPBROpaqueMaterial(RyID materialId)
-{
-	ENGINE_ASSERT_MSG(materialId.IsValid(), "[Graphics] UnloadPBROpaqueMaterial failed. materialId is invalid.");
-	ENGINE_ASSERT_MSG(pbrOpaqueMaterials.contains(materialId), "[Graphics] UnloadPBROpaqueMaterial failed. There is no PBROpaqueMaterial exist with this materialId {}", std::to_string(materialId).c_str());
-
-	if (pbrOpaqueMaterialsUsageCount[materialId] == 0)
-		return;
-
-	pbrOpaqueMaterialsUsageCount[materialId]--;
-
-	if (pbrOpaqueMaterialsUsageCount[materialId] == 0)
-	{
-		PBROpaqueMaterial& pbrOpaqueMaterial = pbrOpaqueMaterials[materialId];
-
-		UnloadImage2D(pbrOpaqueMaterial.albedoImageId);
-		UnloadImage2D(pbrOpaqueMaterial.normalImageId);
-		UnloadImage2D(pbrOpaqueMaterial.metallicRoughnessImageId);
-
-		pbrOpaqueMaterialBuffers.erase(materialId);
-		availablePBROpaqueMaterialsDescriptorBufferInfosIndexes.push(pbrOpaqueMaterial.descriptorIndex);
-	}
-}
-
-ruya::RyID ruya::Graphics::CreateRenderGeometry(const glm::mat4& transform, RyID meshId, RyID materialId)
-{
-	RyID id;
-
-	if (availableRenderGeometryIds.empty())
-	{
-		id = nextRenderGeometryID;
-
-		nextRenderGeometryID = RyID(id.GetRawID() + 1);
+		ryID = meshBufferRyIDCounter;
+		meshBufferRyIDCounter = RyID(meshBufferRyIDCounter.GetRawID() + 1);
 	}
 	else
 	{
-		id = availableRenderGeometryIds.front();
-		availableRenderGeometryIds.pop();
+		ryID = availableMeshBufferRyIDs.front();
+		availableMeshBufferRyIDs.pop();
 	}
 
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
+	uuid2MeshBufferRyID.insert({ ryMeshUUID, ryID });
+	ryID2MeshBufferUUID.insert({ ryID, ryMeshUUID });
+	meshBuffersUsageCounts.insert({ ryID, 1 });
+	meshBuffers.insert({ ryID, std::make_unique<MeshBuffer>() });
 
-	graphicsJob->AddJob([this, id, transform, meshId, materialId]() {
-		if (!meshes.contains(meshId))
+	meshBuffers[ryID]->SetInvalid();
+
+	engine->QueueAsyncJob([this, ryMeshUUID, ryID]()
 		{
-			RUYA_LOG_ERROR("[Graphics] Create render geometry failed. There is no mesh exist with this id: %s", std::to_string(meshId).c_str());
-			return 0;
-		}
+			MeshBuffer* meshBuffer = meshBuffers[ryID].get();
+			std::optional<RyMeshData> ryMesh = engine->GetAssetManager()->LoadGLTF(ryMeshUUID);
+			meshBuffer->Load(ryMesh->vertices, ryMesh->indices);
+			meshBuffer->SetValid();
+		});
 
-		LoadMesh(meshId);
-		LoadPBROpaqueMaterial(materialId);
+	return ryID;
+}
 
-		RenderGeometry renderGeometry = {};
-		renderGeometry.transform = transform;
-		renderGeometry.vertexBufferAddress = meshes[meshId]->GetVertexBuffer()->GetDeviceAddress();
-		renderGeometry.indexBufferAddress = meshes[meshId]->GetIndexBuffer()->GetDeviceAddress();
-		renderGeometry.materialDescriptorIndex = pbrOpaqueMaterials[materialId].descriptorIndex;
-		renderGeometry.meshId = meshId;
-		renderGeometry.materialId = materialId;
-		renderGeometries.insert({ id,  renderGeometry });
+ruya::MeshBuffer* ruya::Graphics::GetMeshBuffer(RyID meshBufferRyID)
+{
+	ENGINE_ASSERT_MSG(meshBufferRyID.IsValid(), "[Graphics] GetMeshBuffer failed. meshBufferRyID is invalid.");
+	ENGINE_ASSERT_MSG(meshBuffers.contains(meshBufferRyID), "[Graphics] GetMeshBuffer failed. There is no MeshBuffer exist with this meshBufferRyID {}", std::to_string(meshBufferRyID).c_str());
 
-		renderGeometry = renderGeometries[id];
+	return meshBuffers[meshBufferRyID].get();
+}
 
-		renderGeometryBuffers.insert(
+void ruya::Graphics::DestroyMeshBuffer(RyID meshBufferRyID)
+{
+	ENGINE_ASSERT_MSG(meshBufferRyID.IsValid(), "[Graphics] DestroyMeshBuffer failed. meshBufferRyID is invalid.");
+	ENGINE_ASSERT_MSG(meshBuffers.contains(meshBufferRyID), "[Graphics] DestroyMeshBuffer failed. There is no MeshBuffer exist with this meshBufferRyID {}", std::to_string(meshBufferRyID).c_str());
+
+	if (meshBuffersUsageCounts[meshBufferRyID] > 0) meshBuffersUsageCounts[meshBufferRyID]--;
+
+	if(meshBuffersUsageCounts[meshBufferRyID] == 0)
+	{
+		meshBuffers[meshBufferRyID]->SetInvalid();
+
+		UUID uuidTemp = ryID2MeshBufferUUID[meshBufferRyID];
+		uuid2MeshBufferRyID.erase(uuidTemp);
+		ryID2MeshBufferUUID.erase(meshBufferRyID);
+		meshBuffersUsageCounts.erase(meshBufferRyID);
+		availableMeshBufferRyIDs.push(meshBufferRyID);
+
+		MeshBuffer* meshBufferptr = meshBuffers[meshBufferRyID].release();
+		meshBuffers.erase(meshBufferRyID);
+
+		engine->QueueAsyncJob([this, meshBufferptr]()
 			{
-				id,
-				std::make_unique<VulkanBuffer>(
-					vulkanContext.get(),
-					sizeof(RenderGeometryGPU),
-					VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-					VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-					VmaMemoryUsage::VMA_MEMORY_USAGE_CPU_TO_GPU)
-			}
-		);
+				meshBufferptr->Unload();
+				delete meshBufferptr;
+			});
+	}
+}
 
-		RenderGeometryGPU renderGeometryGPU = {};
-		renderGeometryGPU.transform = renderGeometry.transform;
-		renderGeometryGPU.vertexBufferAddress = renderGeometry.vertexBufferAddress;
-		renderGeometryGPU.indexBufferAddress = renderGeometry.indexBufferAddress;
-		renderGeometryGPU.materialDescriptorIndex = renderGeometry.materialDescriptorIndex;
+ruya::RyID ruya::Graphics::CreateTexture2D(UUID image2DUUID)
+{
+	ENGINE_ASSERT_MSG(image2DUUID.IsValid(), "[Graphics] CreateTexture2D failed. image2DUUID is invalid.");
 
-		renderGeometryBuffers[id]->UploadData(&renderGeometryGPU, sizeof(RenderGeometryGPU));
+	if (uuid2Texture2DRyID.contains(image2DUUID))
+	{
+		texture2DUsageCounts[uuid2Texture2DRyID[image2DUUID]]++;
+		return uuid2Texture2DRyID[image2DUUID];
+	}
 
-		VkDescriptorBufferInfo descriptorBufferInfo = {};
-		descriptorBufferInfo.buffer = renderGeometryBuffers[id]->GetDeviceHandle();
-		descriptorBufferInfo.offset = 0;
-		descriptorBufferInfo.range = VK_WHOLE_SIZE;
+	RyID ryID = RyID::Invalid();
 
-		std::unique_ptr<VulkanDescriptorWriter> descriptorWriter = std::make_unique<VulkanDescriptorWriter>(vulkanContext.get());
-		descriptorWriter->WriteAndUpdateDescriptorBufferByIndex(renderGeometriesDescriptorSet, static_cast<uint32_t>(id.GetRawID()), descriptorBufferInfo, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	if (availableTexture2DRyIDs.empty())
+	{
+		ryID = texture2DRyIDCounter;
+		texture2DRyIDCounter = RyID(texture2DRyIDCounter.GetRawID() + 1);
+	}
+	else
+	{
+		ryID = availableTexture2DRyIDs.front();
+		availableTexture2DRyIDs.pop();
+	}
 
-		blasInstances.insert({ id, std::make_unique<VulkanBottomLevelAccelerationStructureInstance>(
-			meshes[renderGeometry.meshId]->GetBLAS(), static_cast<uint32_t>(id.GetRawID()), renderGeometry.transform) });
+	uuid2Texture2DRyID.insert({ image2DUUID, ryID });
+	ryID2Texture2DUUID.insert({ ryID, image2DUUID });
+	texture2DUsageCounts.insert({ ryID, 1 });
 
-		DestroyTLAS();
-		CreateTLAS();
+	texture2Ds.insert({ ryID,std::make_unique<Texture2D>() });
+	texture2Ds[ryID]->SetInvalid();
+
+	engine->QueueAsyncJob([this, ryID, image2DUUID]()
+		{
+			ktxTexture2* ktxtet = engine->GetAssetManager()->LoadKTX2(image2DUUID);
+
+			texture2Ds[ryID]->Load(ktxtet, Texture2DSampler::Linear);
+
+			std::lock_guard<std::mutex> guard(descriptorUpdateQueueMutex);
+			texture2DsDescriptorSetUpdateQueue.push(ryID);
+
+			ktxTexture_Destroy(ktxTexture(ktxtet));
 		});
 
-	RecordGraphicsJob(std::move(graphicsJob));
-
-	return id;
+	return ryID;
 }
 
-const ruya::RenderGeometry& ruya::Graphics::GetRenderGeometry(RyID renderGeometryId)
+ruya::Texture2D* ruya::Graphics::GetTexture2D(RyID texture2DRyID)
 {
-	return renderGeometries[renderGeometryId];
+	ENGINE_ASSERT_MSG(texture2DRyID.IsValid(), "[Graphics] GetTexture2D failed. texture2DRyID is invalid.");
+	ENGINE_ASSERT_MSG(texture2Ds.contains(texture2DRyID), "[Graphics] GetTexture2D failed. There is no MeshBuffer exist with this texture2DRyID {}", std::to_string(texture2DRyID).c_str());
+
+	return texture2Ds[texture2DRyID].get();
 }
 
-void ruya::Graphics::UpdateRenderGeometry(RyID renderGeometryId, const glm::mat4& transform, RyID meshId, RyID materialId, bool draw)
+void ruya::Graphics::DestroyTexture2D(RyID texture2DRyID)
 {
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
+	ENGINE_ASSERT_MSG(texture2DRyID.IsValid(), "[Graphics] DestroyTexture2D failed. texture2DRyID is invalid.");
+	ENGINE_ASSERT_MSG(texture2Ds.contains(texture2DRyID), "[Graphics] DestroyTexture2D failed. There is no Texture2D exist with this texture2DRyID {}", std::to_string(texture2DRyID).c_str());
 
-	graphicsJob->AddJob([this, renderGeometryId, transform, meshId, materialId, draw]() {
-		if (!renderGeometries.contains(renderGeometryId))
+	if (texture2DUsageCounts[texture2DRyID] > 0) texture2DUsageCounts[texture2DRyID]--;
+
+	if (texture2DUsageCounts[texture2DRyID] == 0)
+	{
+		texture2Ds[texture2DRyID]->SetInvalid();
+
+		UUID uuidTemp = ryID2Texture2DUUID[texture2DRyID];
+		uuid2Texture2DRyID.erase(uuidTemp);
+		ryID2Texture2DUUID.erase(texture2DRyID);
+		texture2DUsageCounts.erase(texture2DRyID);
+		availableTexture2DRyIDs.push(texture2DRyID);
+
+		Texture2D* texture2Dptr = texture2Ds[texture2DRyID].release();
+		texture2Ds.erase(texture2DRyID);
+
+		engine->QueueAsyncJob([this, texture2Dptr]()
+			{
+				texture2Dptr->Unload();
+				delete texture2Dptr;
+			});
+	}
+}
+
+ruya::RyID ruya::Graphics::CreateRenderMaterial(UUID materialUUID)
+{
+	ENGINE_ASSERT_MSG(materialUUID.IsValid(), "[Graphics] CreateRenderMaterial failed. materialUUID is invalid.");
+
+	if (uuid2RenderMaterialRyID.contains(materialUUID))
+	{
+		renderMaterialUsageCounts[uuid2RenderMaterialRyID[materialUUID]]++;
+		return uuid2RenderMaterialRyID[materialUUID];
+	}
+
+	RyID ryID = RyID::Invalid();
+
+	if (availablerenderMaterialRyIDs.empty())
+	{
+		ryID = renderMaterialRyIDCounter;
+		renderMaterialRyIDCounter = RyID(renderMaterialRyIDCounter.GetRawID() + 1);
+	}
+	else
+	{
+		ryID = availablerenderMaterialRyIDs.front();
+		availablerenderMaterialRyIDs.pop();
+	}
+
+	std::optional<RyMaterial> material = engine->GetAssetManager()->LoadRyMaterial(materialUUID);
+
+	RyID albedoTextureID = CreateTexture2D(material->albedoUUID);
+	RyID normalTextureID = CreateTexture2D(material->normalUUID);
+	RyID metallicRoughnessTextureID = CreateTexture2D(material->metallicRoughnessUUID);
+
+	uuid2RenderMaterialRyID.insert({ materialUUID, ryID });
+	ryID2RenderMaterialUUID.insert({ ryID, materialUUID });
+	renderMaterialUsageCounts.insert({ ryID, 1 });
+
+	renderMaterials.insert({ ryID,std::make_unique<RenderMaterial>(albedoTextureID, normalTextureID, metallicRoughnessTextureID) });
+	renderMaterials[ryID]->SetInvalid();
+
+	engine->QueueAsyncJob([this, ryID]()
 		{
-			RUYA_LOG_ERROR("[Graphics] Update render geometry failed. There is no render geometry exist with this id: %s", std::to_string(renderGeometryId).c_str());
-			return;
-		}
+			renderMaterials[ryID]->Load();
 
-		if (!meshes.contains(meshId))
-		{
-			RUYA_LOG_ERROR("[Graphics] Update render geometry failed. There is no mesh exist with this id: %s", std::to_string(meshId).c_str());
-			return;
-		}
-
-		if (!pbrOpaqueMaterials.contains(materialId))
-		{
-			RUYA_LOG_ERROR("[Graphics] Update render geometry failed. There is no material exist with this id: %s", std::to_string(materialId).c_str());
-			return;
-		}
-
-		RenderGeometry& renderGeometry = renderGeometries[renderGeometryId];
-
-		if (materialId != renderGeometry.materialId)
-		{
-			UnloadPBROpaqueMaterial(renderGeometry.materialId);
-			LoadPBROpaqueMaterial(materialId);
-		}
-
-		if (meshId != renderGeometry.meshId)
-		{
-			UnloadMesh(renderGeometry.meshId);
-			LoadMesh(meshId);
-		}
-
-		renderGeometry.transform = transform;
-		renderGeometry.vertexBufferAddress = meshes[meshId]->GetVertexBuffer()->GetDeviceAddress();
-		renderGeometry.indexBufferAddress = meshes[meshId]->GetIndexBuffer()->GetDeviceAddress();
-		renderGeometry.materialDescriptorIndex = pbrOpaqueMaterials[materialId].descriptorIndex;
-		renderGeometry.meshId = meshId;
-		renderGeometry.materialId = materialId;
-		renderGeometry.draw = draw;
-
-		RenderGeometryGPU renderGeometryGPU = {};
-		renderGeometryGPU.transform = renderGeometry.transform;
-		renderGeometryGPU.vertexBufferAddress = renderGeometry.vertexBufferAddress;
-		renderGeometryGPU.indexBufferAddress = renderGeometry.indexBufferAddress;
-		renderGeometryGPU.materialDescriptorIndex = renderGeometry.materialDescriptorIndex;
-
-		renderGeometryBuffers[renderGeometryId]->UploadData(&renderGeometryGPU, sizeof(RenderGeometryGPU));
+			std::lock_guard<std::mutex> guard(descriptorUpdateQueueMutex);
+			renderMaterialsDescriptorSetUpdateQueue.push(ryID);
 		});
 
-	RecordGraphicsJob(std::move(graphicsJob));
+	return ryID;
 }
 
-void ruya::Graphics::DestroyRenderGeometry(RyID renderGeometryId)
+ruya::RenderMaterial* ruya::Graphics::GetRenderMaterial(RyID renderMaterialRyID)
 {
-	std::unique_ptr<GraphicsJob> graphicsJob = CreateGraphicsJob();
+	ENGINE_ASSERT_MSG(renderMaterialRyID.IsValid(), "[Graphics] GetPBRPBROpaqueMaterial failed. renderMaterialRyID is invalid.");
+	ENGINE_ASSERT_MSG(renderMaterials.contains(renderMaterialRyID), "[Graphics] GetPBRPBROpaqueMaterial failed. There is no PBROpaqueMaterial exist with this renderMaterialRyID {}", std::to_string(renderMaterialRyID).c_str());
 
-	graphicsJob->AddJob([this, renderGeometryId]() {
-		if (!renderGeometries.contains(renderGeometryId))
+	return renderMaterials[renderMaterialRyID].get();
+}
+
+void ruya::Graphics::DestroyRenderMaterial(RyID renderMaterialRyID)
+{
+	ENGINE_ASSERT_MSG(renderMaterialRyID.IsValid(), "[Graphics] DestroyRenderMaterial failed. renderMaterialRyID is invalid.");
+	ENGINE_ASSERT_MSG(renderMaterials.contains(renderMaterialRyID), "[Graphics] DestroyRenderMaterial failed. There is no RenderMaterial exist with this materialID {}", std::to_string(renderMaterialRyID).c_str());
+
+	if (renderMaterialUsageCounts[renderMaterialRyID] > 0) renderMaterialUsageCounts[renderMaterialRyID]--;
+
+	if (renderMaterialUsageCounts[renderMaterialRyID] == 0)
+	{
+		DestroyTexture2D(renderMaterials[renderMaterialRyID]->GetAlbedoTexture2DRyID());
+		DestroyTexture2D(renderMaterials[renderMaterialRyID]->GetNormalTexture2DRyID());
+		DestroyTexture2D(renderMaterials[renderMaterialRyID]->GetMetallicRoughnessTexture2DRyID());
+
+		UUID uuidTemp = ryID2RenderMaterialUUID[renderMaterialRyID];
+		uuid2RenderMaterialRyID.erase(uuidTemp);
+		ryID2RenderMaterialUUID.erase(renderMaterialRyID);
+		renderMaterialUsageCounts.erase(renderMaterialRyID);
+		availablerenderMaterialRyIDs.push(renderMaterialRyID);
+
+		RenderMaterial* renderMaterialptr = renderMaterials[renderMaterialRyID].release();
+		renderMaterials.erase(renderMaterialRyID);
+
+		engine->QueueAsyncJob([this, renderMaterialptr]()
+			{
+				renderMaterialptr->Unload();
+				delete renderMaterialptr;
+			});
+	}
+}
+
+ruya::RyID ruya::Graphics::CreateRenderItem(const glm::mat4& transform, UUID ryMeshUUID, UUID materialUUID)
+{
+	ENGINE_ASSERT_MSG(ryMeshUUID.IsValid(), "[Graphics] CreateRenderItem failed. ryMeshUUID is invalid.");
+	ENGINE_ASSERT_MSG(materialUUID.IsValid(), "[Graphics] CreateRenderItem failed. materialUUID is invalid.");
+
+	RyID ryID = RyID::Invalid();
+
+	bool bPushBack = true;
+
+	if (availableRenderItemIDs.empty())
+	{
+		ryID = renderItemRyIDCounter;
+		renderItemRyIDCounter = RyID(ryID.GetRawID() + 1);
+	}
+	else
+	{
+		ryID = availableRenderItemIDs.front();
+		availableRenderItemIDs.pop();
+		bPushBack = false;
+	}
+
+	RyID meshBufferID = CreateMeshBuffer(ryMeshUUID);
+	RyID materialID = CreateRenderMaterial(materialUUID);
+
+	if (bPushBack)
+	{
+		renderItems.push_back({ transform, meshBufferID, materialID, true });
+	}
+	else
+	{
+		new (&renderItems[ryID.GetRawID()]) RenderItem{transform, meshBufferID, materialID, true};
+	}
+
+	renderItems[ryID.GetRawID()].SetInvalid();
+
+	engine->QueueAsyncJob([this, ryID]()
 		{
-			RUYA_LOG_ERROR("[Graphics] Destroy render geometry failed. There is no render geometry exist with this id: %s", std::to_string(renderGeometryId).c_str());
-			return;
-		}
+			renderItems[ryID.GetRawID()].Load();
 
-		UnloadPBROpaqueMaterial(renderGeometries[renderGeometryId].materialId);
-		UnloadMesh(renderGeometries[renderGeometryId].meshId);
+			VulkanBottomLevelAccelerationStructure* blas = meshBuffers[renderItems[ryID.GetRawID()].GetMeshBufferRyID()]->GetBLAS();
+			blasInstances.insert({ ryID, std::make_unique<VulkanBottomLevelAccelerationStructureInstance>(blas, static_cast<uint32_t>(ryID.GetRawID()), renderItems[ryID.GetRawID()].GetTransform()) });
 
-		renderGeometryBuffers.erase(renderGeometryId);
-		renderGeometries.erase(renderGeometryId);
-		availableRenderGeometryIds.push(renderGeometryId);
-		blasInstances.erase(renderGeometryId);
-
-		DestroyTLAS();
-		CreateTLAS();
+			std::lock_guard<std::mutex> guard(descriptorUpdateQueueMutex);
+			renderItemsDescriptorSetUpdateQueue.push(ryID);
 		});
 
-	RecordGraphicsJob(std::move(graphicsJob));
+	return ryID;
 }
 
-std::unordered_map<ruya::RyID, ruya::RenderGeometry>& ruya::Graphics::GetRenderGeometries()
+ruya::RenderItem* ruya::Graphics::GetRenderItem(RyID renderItemRyID)
 {
-	return renderGeometries;
+	ENGINE_ASSERT_MSG(renderItemRyID.IsValid(), "[Graphics] GetRenderItem failed. renderItemRyID is invalid.");
+	ENGINE_ASSERT_MSG(renderItems.size() > renderItemRyID.GetRawID(), "[Graphics] GetRenderItem failed. There is no RenderItem exist with this id: {}", std::to_string(renderItemRyID).c_str());
+
+	return &renderItems[renderItemRyID.GetRawID()];
+}
+
+void ruya::Graphics::UpdateRenderItemTransform(RyID renderItemRyID, const glm::mat4& transform)
+{
+	ENGINE_ASSERT_MSG(renderItemRyID.IsValid(), "[Graphics] UpdateRenderItemTransform failed. renderItemRyID is invalid.");
+	ENGINE_ASSERT_MSG(renderItems.size() > renderItemRyID.GetRawID(), "[Graphics] UpdateRenderItemTransform failed. There is no RenderItem exist with this id: {}", std::to_string(renderItemRyID).c_str());
+
+	renderItems[renderItemRyID.GetRawID()].UpdateTransform(transform);
+	blasInstances[renderItemRyID]->transform = transform;
+
+	renderItemNeedTransformUpdate.push(renderItemRyID);
+}
+
+void ruya::Graphics::UpdateRenderItemMaterial(RyID renderItemRyID, UUID materialUUID)
+{
+	ENGINE_ASSERT_MSG(renderItemRyID.IsValid(), "[Graphics] UpdateRenderItemMeshAndMaterial failed. renderItemRyID is invalid.");
+	ENGINE_ASSERT_MSG(renderItems.size() > renderItemRyID.GetRawID(), "[Graphics] UpdateRenderItemMeshAndMaterial failed. There is no RenderItem exist with this id: {}", std::to_string(renderItemRyID).c_str());
+
+	RyID oldMaterialRyID = renderItems[renderItemRyID.GetRawID()].GetRenderMaterialRyID();
+
+	RyID materialID = CreateRenderMaterial(materialUUID);
+
+	renderItems[renderItemRyID.GetRawID()].UpdateMaterial(materialID);
+
+	renderItemNeedMaterialUpdate.push({ renderItemRyID, oldMaterialRyID });
+}
+
+void ruya::Graphics::SetRenderItemVisibility(RyID renderItemRyID, bool b)
+{
+	ENGINE_ASSERT_MSG(renderItemRyID.IsValid(), "[Graphics] SetRenderItemVisibility failed. renderItemRyID is invalid.");
+	ENGINE_ASSERT_MSG(renderItems.size() > renderItemRyID.GetRawID(), "[Graphics] SetRenderItemVisibility failed. There is no RenderItem exist with this id: {}", std::to_string(renderItemRyID).c_str());
+
+	renderItems[renderItemRyID.GetRawID()].SetVisibility(b);
+}
+
+void ruya::Graphics::DestroyRenderItem(RyID renderItemRyID)
+{
+	ENGINE_ASSERT_MSG(renderItemRyID.IsValid(), "[Graphics] DestroyRenderItem failed. renderItemRyID is invalid.");
+	ENGINE_ASSERT_MSG(renderItems.size() > renderItemRyID.GetRawID(), "[Graphics] DestroyRenderItem failed. There is no RenderItem exist with this id: {}", std::to_string(renderItemRyID).c_str());
+
+	DestroyMeshBuffer(renderItems[renderItemRyID.GetRawID()].GetMeshBufferRyID());
+	DestroyRenderMaterial(renderItems[renderItemRyID.GetRawID()].GetRenderMaterialRyID());
+
+	renderItems[renderItemRyID.GetRawID()].SetInvalid();
+
+	std::unique_ptr<RenderItem> renderItemPtr = std::make_unique<RenderItem>(std::move(renderItems[renderItemRyID.GetRawID()]));
+	renderItems[renderItemRyID.GetRawID()].~RenderItem();
+
+	availableRenderItemIDs.push(renderItemRyID);
+
+	engine->QueueAsyncJob([this, r = renderItemPtr.release(), renderItemRyID]() mutable
+		{
+			r->Unload();
+			delete r;
+			blasInstances.erase(renderItemRyID);
+
+			for (size_t i = 0; i < frameBufferCount; ++i)
+				rebuildTLASes[i].store(true, std::memory_order_release);
+		});
+}
+
+std::vector<ruya::RenderItem>& ruya::Graphics::GetRenderItems()
+{
+	return renderItems;
+}
+
+size_t ruya::Graphics::GetRenderItemsCount()
+{
+	return renderItems.size();
 }
 
 void ruya::Graphics::SetFrameBufferExtent(uint32_t width, uint32_t height)
@@ -673,8 +513,9 @@ void ruya::Graphics::SetFrameBufferExtent(uint32_t width, uint32_t height)
 	frameBufferWidth = width;
 	frameBufferHeight = height;
 
-	DestroyFrameBuffers();
-	CreateFrameBuffers();
+	WaitGraphicsDeviceIdle();
+
+	defaultPipeline->RecreateFrameBuffers();
 }
 
 uint32_t ruya::Graphics::GetFrameBufferWidth() const
@@ -685,16 +526,6 @@ uint32_t ruya::Graphics::GetFrameBufferWidth() const
 uint32_t ruya::Graphics::GetFrameBufferHeight() const
 {
 	return frameBufferHeight;
-}
-
-ruya::FrameBuffer* ruya::Graphics::CurrentFrameBuffer() const
-{
-	return frameBuffers[frameIndex].get();
-}
-
-ruya::FrameBuffer* ruya::Graphics::GetFrameBufferWithIndex(uint32_t index) const
-{
-	return frameBuffers[index].get();
 }
 
 uint32_t ruya::Graphics::GetCurrentFrameIndex() const
@@ -717,80 +548,125 @@ VkSampler ruya::Graphics::GetLinearSampler() const
 	return linearSampler;
 }
 
-void ruya::Graphics::CreateTLAS()
+void ruya::Graphics::CreateTLAS(uint32_t index)
 {
-	if (renderGeometries.size() > 0)
+	if (renderItems.size() > 0)
 	{
-		tlasDescriptorSet = bindlessDescriptorPool->AllocateDescriptorSet(tlasDescriptorSetLayout->GetDeviceHandle());
+		std::vector<std::pair<uint32_t, VulkanBottomLevelAccelerationStructureInstance*>> b;
 
-		tlas = std::make_unique<VulkanTopLevelAccelerationStructure>(vulkanContext.get(), blasInstances);
+		for (size_t s = 0; s < renderItems.size(); s++)
+		{
+			if (renderItems[s].IsValid())
+				b.push_back({ static_cast<uint32_t>(s), blasInstances[RyID(s)].get() });
+		}
 
-		std::unique_ptr<VulkanDescriptorWriter> descriptorWriter = std::make_unique<VulkanDescriptorWriter>(vulkanContext.get());
-		descriptorWriter->WriteDescriptorAccelerationStructure(0, tlas->GetDeviceHandle());
-		descriptorWriter->UpdateDescriptors(tlasDescriptorSet);
+		if(b.size() > 0)
+		{
+			tlases[index] = std::make_unique<VulkanTopLevelAccelerationStructure>(vulkanContext.get(), b, vulkanContext->GetCurrentFrameResource()->GetCommandBuffer());
+
+			std::unique_ptr<VulkanDescriptorWriter> descriptorWriter = std::make_unique<VulkanDescriptorWriter>(vulkanContext.get());
+			descriptorWriter->WriteDescriptorAccelerationStructure(0, tlases[index]->GetDeviceHandle());
+			descriptorWriter->UpdateDescriptors(tlasDescriptorSets[index]->vkDescriptorSet);
+		}
 	}
 }
 
-void ruya::Graphics::UpdateTLAS(VulkanCommandBuffer* pCommandBuffer)
+void ruya::Graphics::UpdateTLAS(VulkanCommandBuffer* pCommandBuffer, uint32_t index)
 {
-	for (auto& pair : renderGeometries)
-	{
-		RyID id = pair.first;
-		const RenderGeometry renderGeometry = pair.second;
-		blasInstances[id]->transform = renderGeometry.transform;
-		blasInstances[id]->blas = meshes[renderGeometries[RyID(blasInstances[id]->instanceCustomIndex)].meshId]->GetBLAS();
-	}
+	if (!tlases[frameIndex])
+		return;
 
-	pCommandBuffer->UpdateTLAS(tlas.get(), blasInstances);
-}
-
-void ruya::Graphics::DestroyTLAS()
-{
-	if(tlas)
+	if (renderItems.size() > 0)
 	{
-		WaitGraphicsDeviceIdle();
-		bindlessDescriptorPool->FreeDescriptorSet(tlasDescriptorSet);
-		tlas.reset();
+		std::vector<std::pair<uint32_t, VulkanBottomLevelAccelerationStructureInstance*>> b;
+
+		for(size_t s = 0; s < renderItems.size(); s++)
+		{
+			if(renderItems[s].IsValid())
+				b.push_back({ static_cast<uint32_t>(s), blasInstances[RyID(s)].get()});
+		}
+
+		pCommandBuffer->UpdateTLAS(tlases[index].get(), b);
 	}
 }
 
-ruya::VulkanDescriptorSetLayout* ruya::Graphics::GetCameraDataBufferDescriptorSetLayout() const
+void ruya::Graphics::DestroyTLAS(uint32_t index)
+{
+	if (tlases[index])
+	{
+		tlases[index].reset();
+	}
+}
+
+ruya::DescriptorSetLayout* ruya::Graphics::GetCameraDataBufferDescriptorSetLayout() const
 {
 	return cameraDataBufferDescriptorSetLayout.get();
 }
 
-ruya::VulkanDescriptorSetLayout* ruya::Graphics::GetDirectionalLightDataBufferDescriptorSetLayout() const
+ruya::DescriptorSetLayout* ruya::Graphics::GetDirectionalLightDataBufferDescriptorSetLayout() const
 {
 	return directionalLightDataBufferDescriptorSetLayout.get();
 }
 
-ruya::VulkanDescriptorSetLayout* ruya::Graphics::GetGBufferDescriptorSetLayout() const
+ruya::DescriptorSetLayout* ruya::Graphics::GetTexture2DsDescriptorSetLayout() const
 {
-	return gBufferDescriptorSetLayout.get();
+	return texture2DsDescriptorSetLayout.get();
 }
 
-ruya::VulkanDescriptorSetLayout* ruya::Graphics::GetDownsampledGBufferDescriptorSetLayout() const
+ruya::DescriptorSetLayout* ruya::Graphics::GetRenderMaterialsDescriptorSetLayout() const
 {
-	return downsampledGBufferDescriptorSetLayout.get();
+	return renderMaterialsDescriptorSetLayout.get();
 }
 
-ruya::VulkanDescriptorSetLayout* ruya::Graphics::GetDirectionalLightShadowMapImageDescriptorSetLayout() const
+ruya::DescriptorSetLayout* ruya::Graphics::GetRenderItemsDescriptorSetLayout() const
 {
-	return directionalLightShadowMapImageDescriptorSetLayout.get();
+	return renderItemsDescriptorSetLayout.get();
 }
 
-ruya::VulkanDescriptorSetLayout* ruya::Graphics::GetLightPassImageDescriptorSetLayout() const
+ruya::DescriptorSetLayout* ruya::Graphics::GetTLASDescriptorSetLayout() const
 {
-	return lightPassImageDescriptorSetLayout.get();
+	return tlasDescriptorSetLayout.get();
 }
 
-ruya::VulkanRasterizationPipeline* ruya::Graphics::GetGBufferPipeline() const
+bool ruya::Graphics::IsTLASValid()
 {
-	return gBufferPipeline.get();
+	return tlases[frameIndex] != nullptr;
+}
+
+ruya::DescriptorSet* ruya::Graphics::GetTexture2DsDescriptorSet()
+{
+	return texture2DsDescriptorSet.get();
+}
+
+ruya::DescriptorSet* ruya::Graphics::GetRenderMaterialsDescriptorSet()
+{
+	return renderMaterialsDescriptorSet.get();
+}
+
+ruya::DescriptorSet* ruya::Graphics::GetRenderItemsDescriptorSet()
+{
+	return renderItemsDescriptorSet.get();
+}
+
+ruya::DescriptorSet* ruya::Graphics::GetCurrentFramesTLASDescriptorSet()
+{
+	return tlasDescriptorSets[frameIndex].get();
+}
+
+ruya::GraphicsPipeline* ruya::Graphics::GetStandartPipeline()
+{
+	return defaultPipeline.get();
+}
+
+ruya::Texture2D* ruya::Graphics::GetRenderTarget(uint32_t frameIndex, std::string renderTargetName)
+{
+	return defaultPipeline->GetOutputImage(frameIndex, renderTargetName);
 }
 
 void ruya::Graphics::CreateGeneralResources()
 {
+	frameBufferCount = vulkanContext->GetSwapchainImageCount();
+
 	//Samplers
 	VkSamplerCreateInfo samplerCreateInfo = {};
 	samplerCreateInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -811,491 +687,170 @@ void ruya::Graphics::CreateGeneralResources()
 	samplerCreateInfo.minLod = 0.0f;
 	samplerCreateInfo.mipLodBias = 0.0f;
 	samplerCreateInfo.maxLod = 20;
+	samplerCreateInfo.anisotropyEnable = VK_TRUE;
+	samplerCreateInfo.maxAnisotropy = 16.0f;
 
 	vkCreateSampler(vulkanContext->GetDevice(), &samplerCreateInfo, nullptr, &linearSampler);
 
-	//Indirect draw buffer
-	indirectDrawBuffer = std::make_unique<VulkanBuffer>(
-		vulkanContext.get(),
-		kMaxRenderGeometryCount * sizeof(VkDrawIndirectCommand),
-		VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-		VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-		VMA_MEMORY_USAGE_CPU_TO_GPU);
-
 	//Bindless descriptor pool
-	std::vector<VulkanDescriptorPoolSizeRatio> descriptorPoolSizeRatio =
+	std::vector<DescriptorPoolSizeRatio> descriptorPoolSizeRatio =
 	{
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxMaterialCount + kMaxRenderGeometryCount},
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxSampledImage2DCount },
-		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1 }
+		{ DescriptorType::STORAGE_BUFFER, kMaxMaterialCount + kMaxRenderItemCount},
+		{ DescriptorType::COMBINED_IMAGE_SAMPLER, kMaxSampledImage2DCount },
+		{ DescriptorType::ACCELERATION_STRUCTURE, static_cast<float>(frameBufferCount) }
 	};
 
-	bindlessDescriptorPool = std::make_unique<VulkanDescriptorPool>(vulkanContext.get(), descriptorPoolSizeRatio, 4);
+	bindlessDescriptorPool = std::make_unique<DescriptorPool>(descriptorPoolSizeRatio, frameBufferCount + 3);
 
 	//Descriptor set layouts
-	cameraDataBufferDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	cameraDataBufferDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1);
-	cameraDataBufferDescriptorSetLayout->Build(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+	cameraDataBufferDescriptorSetLayout = std::make_unique<DescriptorSetLayout>();
+	cameraDataBufferDescriptorSetLayout->AddBinding(DescriptorType::UNIFORM_BUFFER, 1);
+	cameraDataBufferDescriptorSetLayout->Build();
 
-	directionalLightDataBufferDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	directionalLightDataBufferDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1);
-	directionalLightDataBufferDescriptorSetLayout->Build(VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+	directionalLightDataBufferDescriptorSetLayout = std::make_unique<DescriptorSetLayout>();
+	directionalLightDataBufferDescriptorSetLayout->AddBinding(DescriptorType::UNIFORM_BUFFER, 1);
+	directionalLightDataBufferDescriptorSetLayout->Build();
 
-	gBufferDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	gBufferDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
-	gBufferDescriptorSetLayout->AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
-	gBufferDescriptorSetLayout->AddBinding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
-	gBufferDescriptorSetLayout->AddBinding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
-	gBufferDescriptorSetLayout->Build(VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+	tlasDescriptorSetLayout = std::make_unique<DescriptorSetLayout>();
+	tlasDescriptorSetLayout->AddBinding(DescriptorType::ACCELERATION_STRUCTURE, 1);
+	tlasDescriptorSetLayout->Build();
 
-	downsampledGBufferDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	downsampledGBufferDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
-	downsampledGBufferDescriptorSetLayout->AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
-	downsampledGBufferDescriptorSetLayout->Build(VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+	tlases.resize(frameBufferCount);
+	rebuildTLASes = std::make_unique<std::atomic<bool>[]>(frameBufferCount);
 
-	directionalLightShadowMapImageDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	directionalLightShadowMapImageDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
-	directionalLightShadowMapImageDescriptorSetLayout->Build(VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT);
-
-	lightPassImageDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	lightPassImageDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
-	lightPassImageDescriptorSetLayout->Build(VK_SHADER_STAGE_COMPUTE_BIT);
-
-	tlasDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	tlasDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1);
-	tlasDescriptorSetLayout->Build(VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR);
-
-	CreateImage2DDescriptorSetLayout();
-	CreatePBROpaqueMaterialDescriptorSetLayout();
-	CreateRenderGeometriesDescriptorSetLayout();
-}
-
-void ruya::Graphics::CreateFrameBuffers()
-{
-	for(uint32_t i = 0; i < vulkanContext->GetSwapchainImageCount(); i++)
+	for (size_t i = 0; i < frameBufferCount; ++i) 
 	{
-		frameBuffers.push_back(std::make_unique<FrameBuffer>(vulkanContext.get(), frameBufferWidth, frameBufferHeight));
+		tlasDescriptorSets.push_back(bindlessDescriptorPool->AllocateDescriptorSet(tlasDescriptorSetLayout.get()));
+		rebuildTLASes[i].store(false, std::memory_order_release);
 	}
 
-	frameBufferCount = static_cast<uint32_t>(frameBuffers.size());
+	CreateImage2DDescriptorSetLayout();
+	CreateRenderMaterialDescriptorSetLayout();
+	CreateRenderItemsDescriptorSetLayout();
+
+	meshBufferRyIDCounter = RyID(0);
+	texture2DRyIDCounter = RyID(0);
+	renderMaterialRyIDCounter = RyID(0);
+	renderItemRyIDCounter = RyID(0);
+
 	frameIndex = 0;
-	prevFrameIndex = 0;
 }
 
-void ruya::Graphics::DestroyFrameBuffers()
+void ruya::Graphics::CreateRenderItemsDescriptorSetLayout()
 {
-	frameBuffers.clear();
-}
+	renderItemsDescriptorSetLayout = std::make_unique<DescriptorSetLayout>();
+	renderItemsDescriptorSetLayout->AddBinding(DescriptorType::STORAGE_BUFFER, kMaxRenderItemCount);
+	renderItemsDescriptorSetLayout->Build();
 
-void ruya::Graphics::CreateRenderGeometriesDescriptorSetLayout()
-{
-	renderGeometriesDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	renderGeometriesDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxRenderGeometryCount);
+	renderItemsDescriptorSet = bindlessDescriptorPool->AllocateDescriptorSet(renderItemsDescriptorSetLayout.get(), 1, true);
 
-	std::vector<VkDescriptorBindingFlags> bindingFlags =
-	{
-		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT
-	};
-
-	VkDescriptorSetLayoutBindingFlagsCreateInfo descriptorSetLayoutBindingFlagsCreateInfo = {};
-	descriptorSetLayoutBindingFlagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	descriptorSetLayoutBindingFlagsCreateInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-	descriptorSetLayoutBindingFlagsCreateInfo.pBindingFlags = bindingFlags.data();
-
-	renderGeometriesDescriptorSetLayout->Build(
-		VK_SHADER_STAGE_VERTEX_BIT |
-		VK_SHADER_STAGE_FRAGMENT_BIT |
-		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
-		VK_SHADER_STAGE_COMPUTE_BIT,
-		&descriptorSetLayoutBindingFlagsCreateInfo,
-		VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT);
-
-	renderGeometriesDescriptorSet = bindlessDescriptorPool->AllocateDescriptorSet(renderGeometriesDescriptorSetLayout->GetDeviceHandle(), true, kMaxRenderGeometryCount);
-
-	nextRenderGeometryID = RyID(0);
+	renderItems.reserve(kMaxRenderItemCount);
 }
 
 void ruya::Graphics::CreateImage2DDescriptorSetLayout()
 {
-	image2DsDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	image2DsDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxSampledImage2DCount);
+	texture2DsDescriptorSetLayout = std::make_unique<DescriptorSetLayout>();
+	texture2DsDescriptorSetLayout->AddBinding(DescriptorType::COMBINED_IMAGE_SAMPLER, kMaxSampledImage2DCount);
+	texture2DsDescriptorSetLayout->Build();
 
-	std::vector<VkDescriptorBindingFlags> bindingFlags =
-	{
-		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT
-	};
-
-	VkDescriptorSetLayoutBindingFlagsCreateInfo descriptorSetLayoutBindingFlagsCreateInfo = {};
-	descriptorSetLayoutBindingFlagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	descriptorSetLayoutBindingFlagsCreateInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-	descriptorSetLayoutBindingFlagsCreateInfo.pBindingFlags = bindingFlags.data();
-
-	image2DsDescriptorSetLayout->Build(
-		VK_SHADER_STAGE_VERTEX_BIT |
-		VK_SHADER_STAGE_FRAGMENT_BIT |
-		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
-		VK_SHADER_STAGE_COMPUTE_BIT,
-		&descriptorSetLayoutBindingFlagsCreateInfo,
-		VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT);
-
-	image2DsDescriptorSet = bindlessDescriptorPool->AllocateDescriptorSet(image2DsDescriptorSetLayout->GetDeviceHandle(), true, kMaxSampledImage2DCount);
-
-	image2DsDescriptorImageInfosIndexCounter = 0;
+	texture2DsDescriptorSet = bindlessDescriptorPool->AllocateDescriptorSet(texture2DsDescriptorSetLayout.get(), 1, true);
 }
 
-void ruya::Graphics::CreatePBROpaqueMaterialDescriptorSetLayout()
+void ruya::Graphics::CreateRenderMaterialDescriptorSetLayout()
 {
-	pbrOpaqueMaterialsDescriptorSetLayout = std::make_unique<VulkanDescriptorSetLayout>(vulkanContext.get());
-	pbrOpaqueMaterialsDescriptorSetLayout->AddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kMaxMaterialCount);
+	renderMaterialsDescriptorSetLayout = std::make_unique<DescriptorSetLayout>();
+	renderMaterialsDescriptorSetLayout->AddBinding(DescriptorType::STORAGE_BUFFER, kMaxMaterialCount);
+	renderMaterialsDescriptorSetLayout->Build();
 
-	std::vector<VkDescriptorBindingFlags> bindingFlags =
-	{
-		VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT
-	};
-
-	VkDescriptorSetLayoutBindingFlagsCreateInfo descriptorSetLayoutBindingFlagsCreateInfo = {};
-	descriptorSetLayoutBindingFlagsCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-	descriptorSetLayoutBindingFlagsCreateInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
-	descriptorSetLayoutBindingFlagsCreateInfo.pBindingFlags = bindingFlags.data();
-
-	pbrOpaqueMaterialsDescriptorSetLayout->Build(
-		VK_SHADER_STAGE_VERTEX_BIT |
-		VK_SHADER_STAGE_FRAGMENT_BIT |
-		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
-		VK_SHADER_STAGE_COMPUTE_BIT,
-		&descriptorSetLayoutBindingFlagsCreateInfo,
-		VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT);
-
-	pbrOpaqueMaterialsDescriptorSet = bindlessDescriptorPool->AllocateDescriptorSet(pbrOpaqueMaterialsDescriptorSetLayout->GetDeviceHandle(), true, kMaxMaterialCount);
-
-	pbrOpaqueMaterialsDescriptorBufferInfosIndexCounter = 0;
+	renderMaterialsDescriptorSet = bindlessDescriptorPool->AllocateDescriptorSet(renderMaterialsDescriptorSetLayout.get(), 1, true);
 }
 
-void ruya::Graphics::CreateGBufferPipeline()
+void ruya::Graphics::CreateDebugLinePipeline()
 {
-	std::vector<VkFormat> colorAttachmentFormats = { VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT };
-
-	VkFormat depthAttachment = VK_FORMAT_D32_SFLOAT;
-
-	std::vector<VulkanDescriptorSetLayout*>descriptorSetLayouts;
-	descriptorSetLayouts.push_back(image2DsDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(pbrOpaqueMaterialsDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(renderGeometriesDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(cameraDataBufferDescriptorSetLayout.get());
-
-	std::vector<VkPushConstantRange> pushConstantRanges;
-
-	gBufferPipeline = std::make_unique<VulkanRasterizationPipeline>(
-		vulkanContext.get(),
-		ASSETS_DIR + "ruya_files/shaders/compiled/gbuffer_vertex_shader.spv",
-		ASSETS_DIR + "ruya_files/shaders/compiled/gbuffer_fragment_shader.spv",
-		descriptorSetLayouts,
-		colorAttachmentFormats,
-		depthAttachment,
-		true,
-		VK_COMPARE_OP_LESS_OR_EQUAL,
-		pushConstantRanges);
+	debugLinePipeline = std::make_unique<DebugLinePipeline>();
 }
 
-void ruya::Graphics::DispatchGBufferPipeline()
+void ruya::Graphics::DispatchDebugLinePipeline()
 {
-	VkExtent2D extent{ frameBufferWidth, frameBufferHeight };
+	debugLinePipeline->Dispatch(frameBufferWidth, frameBufferHeight, GetRenderTarget(frameIndex, "toneMapPassResultImage"), defaultPipeline->GetOutputImage(frameIndex, "gbufferDepth"));
+}
 
-	VkRenderingAttachmentInfo albedoDepthAttachmentInfo = {};
-	albedoDepthAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	albedoDepthAttachmentInfo.imageView = frameBuffers[frameIndex]->GetGBuffer()->GetAlbedoDepth()->GetImageView();
-	albedoDepthAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	albedoDepthAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	albedoDepthAttachmentInfo.clearValue.color = { {0.0f, 0.0f, 0.0f, 1.0f} };
-	albedoDepthAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+void ruya::Graphics::UpdateDescriptors()
+{
+	std::lock_guard<std::mutex> guard(descriptorUpdateQueueMutex);
 
-	VkRenderingAttachmentInfo positionMetallicAttachmentInfo = {};
-	positionMetallicAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	positionMetallicAttachmentInfo.imageView = frameBuffers[frameIndex]->GetGBuffer()->GetPositionMetallic()->GetImageView();
-	positionMetallicAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	positionMetallicAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	positionMetallicAttachmentInfo.clearValue.color = { {0.0f, 0.0f, 0.0f, 1.0f} };
-	positionMetallicAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-	VkRenderingAttachmentInfo normalRoughnessAttachmentInfo = {};
-	normalRoughnessAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	normalRoughnessAttachmentInfo.imageView = frameBuffers[frameIndex]->GetGBuffer()->GetNormalRoughness()->GetImageView();
-	normalRoughnessAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	normalRoughnessAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	normalRoughnessAttachmentInfo.clearValue.color = { {0.0f, 0.0f, 0.0f, 1.0f} };
-	normalRoughnessAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-	VkRenderingAttachmentInfo vertexNormalsAttachmentInfo = {};
-	vertexNormalsAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	vertexNormalsAttachmentInfo.imageView = frameBuffers[frameIndex]->GetGBuffer()->GetVertexNormals()->GetImageView();
-	vertexNormalsAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	vertexNormalsAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	vertexNormalsAttachmentInfo.clearValue.color = { {0.0f, 0.0f, 0.0f, 1.0f} };
-	vertexNormalsAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-	VkRenderingAttachmentInfo depthAttachmentInfo = {};
-	depthAttachmentInfo.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-	depthAttachmentInfo.imageView = frameBuffers[frameIndex]->GetGBuffer()->GetDepth()->GetImageView();
-	depthAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	depthAttachmentInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	depthAttachmentInfo.clearValue.depthStencil = { 1.0f, 0 };
-	depthAttachmentInfo.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-	VkImageSubresourceRange colorRange{};
-	colorRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	colorRange.baseMipLevel = 0;
-	colorRange.levelCount = 1;
-	colorRange.baseArrayLayer = 0;
-	colorRange.layerCount = 1;
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetAlbedoDepth(),
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetPositionMetallic(),
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetNormalRoughness(),
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetVertexNormals(),
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		colorRange
-	);
-
-	VkImageSubresourceRange depthRange{};
-	depthRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-	depthRange.baseMipLevel = 0;
-	depthRange.levelCount = 1;
-	depthRange.baseArrayLayer = 0;
-	depthRange.layerCount = 1;
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetDepth(),
-		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-		VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-		depthRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->SetViewPort(extent.width, extent.height);
-
-	std::vector<VkRenderingAttachmentInfo> renderingAttachmentInfos = { albedoDepthAttachmentInfo,  positionMetallicAttachmentInfo, normalRoughnessAttachmentInfo, vertexNormalsAttachmentInfo };
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->BeginRenderPass(extent, renderingAttachmentInfos, &depthAttachmentInfo);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->BindRasterizationPipeline(*gBufferPipeline);
-
-	std::vector<VkDescriptorSet> descriptorSets;
-	descriptorSets.push_back(image2DsDescriptorSet);
-	descriptorSets.push_back(pbrOpaqueMaterialsDescriptorSet);
-	descriptorSets.push_back(renderGeometriesDescriptorSet);
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetCameraDataBufferDescriptorSet());
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->BindDescriptorSets(descriptorSets, gBufferPipeline->GetPipelineLayout(), VK_PIPELINE_BIND_POINT_GRAPHICS);
-
-	std::vector<VkDrawIndirectCommand> drawCmds;
-	drawCmds.reserve(renderGeometries.size());
-
-	for (auto& pair : renderGeometries)
+	while (!texture2DsDescriptorSetUpdateQueue.empty())
 	{
-		RyID renderGeometryID = pair.first;
-		RenderGeometry& renderGeometry = pair.second;
+		RyID ryID = texture2DsDescriptorSetUpdateQueue.front();
+		texture2DsDescriptorSetUpdateQueue.pop();
 
-		if(renderGeometryID.IsValid() && renderGeometry.draw && renderGeometry.meshId.IsValid())
-		{
-			VkDrawIndirectCommand cmd{};
-			cmd.vertexCount = meshes[renderGeometry.meshId]->GetIndexCount();
-			cmd.instanceCount = 1;
-			cmd.firstVertex = 0;
-			cmd.firstInstance = static_cast<uint32_t>(renderGeometryID.GetRawID());
-			drawCmds.push_back(cmd);
-		}
+		VkDescriptorImageInfo descriptorImageInfo = {};
+		descriptorImageInfo.imageLayout = texture2Ds[ryID]->GetVulkanImage()->imageLayout;
+		descriptorImageInfo.sampler = linearSampler;
+		descriptorImageInfo.imageView = texture2Ds[ryID]->GetVulkanImage()->GetImageView();
+
+		std::unique_ptr<VulkanDescriptorWriter> descriptorWriter = std::make_unique<VulkanDescriptorWriter>(vulkanContext.get());
+		descriptorWriter->WriteAndUpdateDescriptorImageByIndex(texture2DsDescriptorSet->vkDescriptorSet, static_cast<uint32_t>(ryID.GetRawID()), descriptorImageInfo);
+
+		texture2Ds[ryID]->SetValid();
 	}
 
-	uint32_t drawCount = static_cast<uint32_t>(drawCmds.size());
-
-	if (drawCount > 0)
+	while (!renderMaterialsDescriptorSetUpdateQueue.empty())
 	{
-		indirectDrawBuffer->UploadData(drawCmds.data(), drawCount * sizeof(VkDrawIndirectCommand));
-		vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->DrawIndirect(*indirectDrawBuffer.get(), drawCount, sizeof(VkDrawIndirectCommand));
+		RyID ryID = renderMaterialsDescriptorSetUpdateQueue.front();
+		renderMaterialsDescriptorSetUpdateQueue.pop();
+
+		VkDescriptorBufferInfo descriptorBufferInfo = {};
+		descriptorBufferInfo.buffer = renderMaterials[ryID]->GetRenderMaterialBuffer()->GetDeviceHandle();
+		descriptorBufferInfo.offset = 0;
+		descriptorBufferInfo.range = VK_WHOLE_SIZE;
+
+		std::unique_ptr<VulkanDescriptorWriter> descriptorWriter = std::make_unique<VulkanDescriptorWriter>(vulkanContext.get());
+		descriptorWriter->WriteAndUpdateDescriptorBufferByIndex(renderMaterialsDescriptorSet->vkDescriptorSet, static_cast<uint32_t>(ryID.GetRawID()), descriptorBufferInfo, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+		renderMaterials[ryID]->SetValid();
 	}
 
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->EndRenderPass();
+	while (!renderItemsDescriptorSetUpdateQueue.empty())
+	{
+		RyID ryID = renderItemsDescriptorSetUpdateQueue.front();
+		renderItemsDescriptorSetUpdateQueue.pop();
+
+		UpdateRenderItemTransform(ryID, renderItems[ryID.GetRawID()].GetTransform());
+
+		VkDescriptorBufferInfo descriptorBufferInfo = {};
+		descriptorBufferInfo.buffer = renderItems[ryID.GetRawID()].GetRenderItemBufferDevice()->GetDeviceHandle();
+		descriptorBufferInfo.offset = 0;
+		descriptorBufferInfo.range = VK_WHOLE_SIZE;
+
+		std::unique_ptr<VulkanDescriptorWriter> descriptorWriter = std::make_unique<VulkanDescriptorWriter>(vulkanContext.get());
+		descriptorWriter->WriteAndUpdateDescriptorBufferByIndex(renderItemsDescriptorSet->vkDescriptorSet, static_cast<uint32_t>(ryID.GetRawID()), descriptorBufferInfo, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+		for (size_t i = 0; i < frameBufferCount; ++i)
+			rebuildTLASes[i].store(true, std::memory_order_release);
+
+		renderItems[ryID.GetRawID()].SetValid();
+	}
 }
 
-void ruya::Graphics::CreateDirectionalLightShadowPipeline()
+void ruya::Graphics::SyncRenderItemTransforms()
 {
-	std::string rayGenShaderPath = ASSETS_DIR + "ruya_files/shaders/compiled/rt_directional_light_shadow_ray_generation.spv";
-	std::string rayMissShaderPath = ASSETS_DIR + "ruya_files/shaders/compiled/rt_directional_light_shadow_ray_miss.spv";
+	while(!renderItemNeedTransformUpdate.empty())
+	{
+		RyID ryID = renderItemNeedTransformUpdate.front();
+		renderItemNeedTransformUpdate.pop();
 
-	std::vector<VulkanDescriptorSetLayout*>descriptorSetLayouts;
-	descriptorSetLayouts.push_back(directionalLightDataBufferDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(gBufferDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(directionalLightShadowMapImageDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(tlasDescriptorSetLayout.get());
+		renderItems[ryID.GetRawID()].UpdateTransform(renderItems[ryID.GetRawID()].GetTransform());
+		blasInstances[ryID]->transform = renderItems[ryID.GetRawID()].GetTransform();
+	}
 
-	std::vector<std::string> missShaders;
-	missShaders.push_back(rayMissShaderPath);
+	while (!renderItemNeedMaterialUpdate.empty())
+	{
+		auto& pair = renderItemNeedMaterialUpdate.front();
+		renderItemNeedMaterialUpdate.pop();
 
-	directionalLightShadowPipeline = std::make_unique<VulkanRayTracingPipeline>(
-		vulkanContext.get(),
-		rayGenShaderPath,
-		missShaders,
-		"",
-		"",
-		descriptorSetLayouts);
-}
+		renderItems[pair.first.GetRawID()].UpdateMaterial(renderItems[pair.first.GetRawID()].GetRenderMaterialRyID());
 
-void ruya::Graphics::DispatchDirectionalLightShadowPipeline()
-{
-	VkImageSubresourceRange colorRange{};
-	colorRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	colorRange.baseMipLevel = 0;
-	colorRange.levelCount = 1;
-	colorRange.baseArrayLayer = 0;
-	colorRange.layerCount = 1;
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetAlbedoDepth(),
-		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetPositionMetallic(),
-		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetNormalRoughness(),
-		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetDirectionalLightShadowMapImage(),
-		VK_ACCESS_SHADER_WRITE_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-		colorRange
-	);
-
-	std::vector<VkDescriptorSet> descriptorSets;
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetDirectionalLightDataBufferDescriptorSet());
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetGBufferDescriptorSet());
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetDirectionalLightShadowMapImageDescriptorSet());
-	descriptorSets.push_back(tlasDescriptorSet);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->TraceRays(directionalLightShadowPipeline.get(), descriptorSets, frameBufferWidth, frameBufferHeight);
-}
-
-void ruya::Graphics::CreateLightPassPipeline()
-{
-	std::vector<VulkanDescriptorSetLayout*>descriptorSetLayouts;
-	descriptorSetLayouts.push_back(cameraDataBufferDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(directionalLightDataBufferDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(gBufferDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(directionalLightShadowMapImageDescriptorSetLayout.get());
-	descriptorSetLayouts.push_back(lightPassImageDescriptorSetLayout.get());
-
-	std::vector<VkPushConstantRange> pushConstantRanges;
-
-	lightPassPipeline = std::make_unique<VulkanComputePipeline>(
-		vulkanContext.get(),
-		ASSETS_DIR + "ruya_files/shaders/compiled/light_pass_compute_shader.spv",
-		descriptorSetLayouts,
-		pushConstantRanges);
-}
-
-void ruya::Graphics::DispatchLightPassPipeline()
-{
-	VkImageSubresourceRange colorRange{};
-	colorRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	colorRange.baseMipLevel = 0;
-	colorRange.levelCount = 1;
-	colorRange.baseArrayLayer = 0;
-	colorRange.layerCount = 1;
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetAlbedoDepth(),
-		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetPositionMetallic(),
-		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetNormalRoughness(),
-		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetGBuffer()->GetVertexNormals(),
-		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetDirectionalLightShadowMapImage(),
-		VK_ACCESS_SHADER_READ_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		colorRange
-	);
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->ImageMemoryBarrier(
-		frameBuffers[frameIndex]->GetLightPassImage(),
-		VK_ACCESS_SHADER_WRITE_BIT,
-		VK_IMAGE_LAYOUT_GENERAL,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		colorRange
-	);
-
-	std::vector<VkDescriptorSet> descriptorSets;
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetCameraDataBufferDescriptorSet());
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetDirectionalLightDataBufferDescriptorSet());
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetGBufferDescriptorSet());
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetDirectionalLightShadowMapImageDescriptorSet());
-	descriptorSets.push_back(frameBuffers[frameIndex]->GetLightPassImageDescriptorSet());
-
-	vulkanContext->GetCurrentFrameResource()->GetCommandBuffer()->DispatchComputePipeline(lightPassPipeline.get(), descriptorSets, frameBufferWidth, frameBufferHeight, 1);
+		DestroyRenderMaterial(pair.second);
+	}
 }

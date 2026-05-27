@@ -10,6 +10,43 @@
 
 #include "vulkan_helpers.h"
 
+namespace
+{
+	VKAPI_ATTR VkBool32 VKAPI_CALL RuyaVulkanDebugCallback(
+		VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+		VkDebugUtilsMessageTypeFlagsEXT messageTypes,
+		const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+		void* pUserData)
+	{
+		const char* type = "General";
+		if (messageTypes & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT)
+			type = "Validation";
+		else if (messageTypes & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)
+			type = "Performance";
+
+		switch (messageSeverity)
+		{
+		case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT:
+			RUYA_LOG_DEBUG("[Vulkan][{}] {}", type, pCallbackData->pMessage);
+			break;
+		case VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT:
+			RUYA_LOG_INFO("[Vulkan][{}] {}", type, pCallbackData->pMessage);
+			break;
+		case VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT:
+			RUYA_LOG_WARN("[Vulkan][{}] {}", type, pCallbackData->pMessage);
+			break;
+		case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT:
+			RUYA_LOG_ERROR("[Vulkan][{}] {}", type, pCallbackData->pMessage);
+			break;
+		default:
+			RUYA_LOG_INFO("[Vulkan][{}] {}", type, pCallbackData->pMessage);
+			break;
+		}
+
+		return VK_FALSE;
+	}
+}
+
 ruya::VulkanContext::~VulkanContext()
 {
 	WaitDeviceIdle();
@@ -24,9 +61,9 @@ ruya::VulkanContext::~VulkanContext()
 
 void ruya::VulkanContext::Init(Window* window, bool useValidation)
 {
-	applicationName = "Ruya Engine (Vulkan-1.4)";
+	applicationName = "Ruya Engine (Vulkan-1.3)";
 	vulkanApiMajorVersion = 1;
-	vulkanApiMinorVersion = 4;
+	vulkanApiMinorVersion = 3;
 	this->useValidation = useValidation;
 
 	this->window = window;
@@ -64,12 +101,12 @@ VkDevice ruya::VulkanContext::GetDevice() const
 
 VkQueue ruya::VulkanContext::GetDeviceQueue() const
 {
-	return deviceQueue;
+	return graphicsQueue;
 }
 
 uint32_t ruya::VulkanContext::GetDeviceQueueFamilyIndex() const
 {
-	return deviceQueueFamilyIndex;
+	return graphicsQueueFamilyIndex;
 }
 
 VkFormat ruya::VulkanContext::GetSwapchainImageFormat() const
@@ -107,26 +144,74 @@ VmaAllocator ruya::VulkanContext::GetVulkanMemoryAllocator() const
 	return vulkanMemoryAllocator;
 }
 
-void ruya::VulkanContext::ImmediateSubmitCommand(std::function<void(VulkanCommandBuffer* commandBuffer)>&& function)
+void ruya::VulkanContext::ImmediateSubmitCommand(std::function<void(VulkanCommandBuffer* commandBuffer)>&& function, const ImmediateSubmitTransferList& transferList)
 {
 	CHECK_VKRESULT(vkResetFences(device, 1, &immediateFence));
 
-	commandBuffer->Reset();
-	commandBuffer->Begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-	function(commandBuffer.get());
-	commandBuffer->End();
+	asyncCommandBuffer->Reset();
+	asyncCommandBuffer->Begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 
-	std::vector<VkCommandBuffer> commandBuffers;
-	commandBuffers.push_back(commandBuffer->GetDeviceHandle());
+	function(asyncCommandBuffer.get());
+
+	for (auto& entry : transferList.buffers)
+	{
+		asyncCommandBuffer->ReleaseBufferOwnership(
+			entry.buffer,
+			asyncQueueFamilyIndex,
+			graphicsQueueFamilyIndex,
+			entry.releaseStage,
+			entry.releaseAccess
+		);
+	}
+
+	for (auto& imgEntry : transferList.images)
+	{
+		asyncCommandBuffer->ReleaseImageOwnership(
+			imgEntry.image,
+			asyncQueueFamilyIndex,
+			graphicsQueueFamilyIndex,
+			imgEntry.finalLayout,
+			imgEntry.releaseStage,
+			imgEntry.releaseAccess,
+			imgEntry.subresourceRange
+		);
+	}
+
+	asyncCommandBuffer->End();
 
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = commandBuffers.data();
+	VkCommandBuffer cb = asyncCommandBuffer->GetDeviceHandle();
+	submitInfo.pCommandBuffers = &cb;
 
-	CHECK_VKRESULT(vkQueueSubmit(deviceQueue, 1, &submitInfo, immediateFence));
-
+	CHECK_VKRESULT(vkQueueSubmit(asyncQueue, 1, &submitInfo, immediateFence));
 	CHECK_VKRESULT(vkWaitForFences(device, 1, &immediateFence, VK_TRUE, UINT64_MAX));
+
+	{
+		std::unique_lock<std::mutex> lock(acquiresMutex);
+
+		for (auto& entry : transferList.buffers)
+		{
+			pendingBufferAcquires.push_back({
+				entry.buffer,
+				entry.finalStage,
+				entry.finalAccess
+				});
+		}
+
+		for (auto& imgEntry : transferList.images)
+		{
+			pendingImageAcquires.push_back({
+				imgEntry.image,
+				imgEntry.finalLayout,
+				imgEntry.finalLayout,
+				imgEntry.finalStage,
+				imgEntry.finalAccess,
+				imgEntry.subresourceRange
+				});
+		}
+	}
 }
 
 void ruya::VulkanContext::WaitDeviceIdle()
@@ -141,9 +226,18 @@ uint32_t ruya::VulkanContext::GetSwapchainImageCount() const
 
 bool ruya::VulkanContext::BeginFrame()
 {
-	if (window->IsWindowResized() || window->IsWindowMinimized())
+	if (window->IsWindowResized() || window->IsWindowMinimized() || window->IsFrameRateChanged())
 	{
-		window->SetWindowResized(false);
+		if(window->IsWindowResized())
+			window->SetWindowResized(false);
+
+		if (window->IsFrameRateChanged()) 
+		{
+			window->SetFrameRateChanged(false);
+
+			if (window->GetFrameRateMode() == 0) swapchainPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+			else if (window->GetFrameRateMode() == 1) swapchainPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+		}
 
 		if (!window->IsWindowMinimized())
 			RecreateSwapchain();
@@ -191,6 +285,39 @@ bool ruya::VulkanContext::BeginFrame()
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 		{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 }
 	);
+
+	{
+		std::unique_lock<std::mutex> lock(acquiresMutex);
+
+		VulkanCommandBuffer* gfxCB = frameResource.GetCommandBuffer();
+
+		for (auto& p : pendingBufferAcquires)
+		{
+			gfxCB->AcquireBufferOwnership(
+				p.buffer,
+				asyncQueueFamilyIndex,
+				graphicsQueueFamilyIndex,
+				p.dstStageMask,
+				p.dstAccessMask
+			);
+		}
+		pendingBufferAcquires.clear();
+
+		for (auto& p : pendingImageAcquires)
+		{
+			gfxCB->AcquireImageOwnership(
+				p.image,
+				asyncQueueFamilyIndex,
+				graphicsQueueFamilyIndex,
+				p.oldLayout,
+				p.newLayout,
+				p.dstStageMask,
+				p.dstAccessMask,
+				p.subresourceRange
+			);
+		}
+		pendingImageAcquires.clear();
+	}
 
 	return true;
 }
@@ -244,7 +371,7 @@ void ruya::VulkanContext::EndFrame()
 	submitInfo.commandBufferInfoCount = 1;
 	submitInfo.pCommandBufferInfos = &commandBufferSubmitInfo;
 
-	CHECK_VKRESULT_DEBUG(vkQueueSubmit2(deviceQueue, 1, &submitInfo, *frameResource.GetRenderFence()));
+	CHECK_VKRESULT_DEBUG(vkQueueSubmit2(graphicsQueue, 1, &submitInfo, *frameResource.GetRenderFence()));
 
 	VkPresentInfoKHR presentInfo = {};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -255,7 +382,7 @@ void ruya::VulkanContext::EndFrame()
 	presentInfo.waitSemaphoreCount = 1;
 	presentInfo.pImageIndices = &swapchainImageIndex;
 
-	VkResult presentResult = vkQueuePresentKHR(deviceQueue, &presentInfo);
+	VkResult presentResult = vkQueuePresentKHR(graphicsQueue, &presentInfo);
 
 	frameIndex++;
 
@@ -277,9 +404,12 @@ void ruya::VulkanContext::CreateInstance()
 
 	vkb::InstanceBuilder builder;
 
-	auto inst_ret = builder.set_app_name(applicationName.c_str())
-		.request_validation_layers(useValidation)
-		.use_default_debug_messenger()
+	builder.set_app_name(applicationName.c_str())
+		.require_api_version(vulkanApiMajorVersion, vulkanApiMinorVersion, 0);
+
+#if defined(DEBUG) || defined(RELEASE)
+	builder.request_validation_layers(true)
+		.set_debug_callback(RuyaVulkanDebugCallback)
 		.add_debug_messenger_severity
 		(
 			VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
@@ -290,21 +420,35 @@ void ruya::VulkanContext::CreateInstance()
 			VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
 			VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
 			VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT
-		)
-		.require_api_version(vulkanApiMajorVersion, vulkanApiMinorVersion, 0)
-		.build();
+		);
+#else
+	builder.request_validation_layers(false);
+#endif
+
+	auto inst_ret = builder.build();
+	if (!inst_ret)
+	{
+		RUYA_LOG_ERROR("Failed to create Vulkan instance: {0}", inst_ret.error().message());
+		return;
+	}
 
 	vkbInstance = inst_ret.value();
-
 	instance = vkbInstance.instance;
+
+#if defined(DEBUG) || defined(RELEASE)
 	debugUtilsMessenger = vkbInstance.debug_messenger;
+#else
+	debugUtilsMessenger = VK_NULL_HANDLE;
+#endif
 
 	volkLoadInstance(instance);
 }
 
 void ruya::VulkanContext::DestroyInstance()
 {
+#if defined(DEBUG) || defined(RELEASE)
 	vkDestroyDebugUtilsMessengerEXT(instance, debugUtilsMessenger, nullptr);
+#endif
 	vkDestroyInstance(instance, nullptr);
 }
 
@@ -323,16 +467,19 @@ void ruya::VulkanContext::DestroySurface()
 
 void ruya::VulkanContext::CreateDevice()
 {
-
 	VkPhysicalDeviceFeatures physicalDeviceFeatures = {};
 	physicalDeviceFeatures.shaderInt64 = true;
 	physicalDeviceFeatures.samplerAnisotropy = VK_TRUE;
 	physicalDeviceFeatures.multiDrawIndirect = VK_TRUE;
 	physicalDeviceFeatures.depthClamp = VK_FALSE;
+	physicalDeviceFeatures.wideLines = VK_TRUE;
+	physicalDeviceFeatures.shaderResourceMinLod = VK_TRUE;
 
 	VkPhysicalDeviceVulkan11Features physicalDeviceFeatures11{};
 	physicalDeviceFeatures11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
 	physicalDeviceFeatures11.shaderDrawParameters = VK_TRUE;
+	physicalDeviceFeatures11.storageBuffer16BitAccess = VK_TRUE;
+	physicalDeviceFeatures11.uniformAndStorageBuffer16BitAccess = VK_TRUE;
 
 	VkPhysicalDeviceVulkan13Features features13 = {};
 	features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
@@ -347,9 +494,11 @@ void ruya::VulkanContext::CreateDevice()
 	rtPipelineFeature.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
 	rtPipelineFeature.rayTracingPipeline = VK_TRUE;
 
-	/*VkPhysicalDeviceRayTracingValidationFeaturesNV physicalDeviceRayTracingValidationFeaturesNV = {};
+#if defined(DEBUG) || defined(RELEASE)
+	VkPhysicalDeviceRayTracingValidationFeaturesNV physicalDeviceRayTracingValidationFeaturesNV = {};
 	physicalDeviceRayTracingValidationFeaturesNV.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_VALIDATION_FEATURES_NV;
-	physicalDeviceRayTracingValidationFeaturesNV.rayTracingValidation = VK_TRUE;*/
+	physicalDeviceRayTracingValidationFeaturesNV.rayTracingValidation = VK_TRUE;
+#endif
 
 	VkPhysicalDeviceVulkan12Features features12{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
 	features12.bufferDeviceAddress = true;
@@ -364,6 +513,11 @@ void ruya::VulkanContext::CreateDevice()
 	features12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
 	features12.scalarBlockLayout = VK_TRUE;
 	features12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+	features12.uniformAndStorageBuffer8BitAccess = VK_TRUE;
+
+	VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {};
+	rayQueryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+	rayQueryFeatures.rayQuery = VK_TRUE;
 
 	vkb::PhysicalDeviceSelector selector{ vkbInstance };
 	selector = selector.set_minimum_version(1, 3);
@@ -373,10 +527,18 @@ void ruya::VulkanContext::CreateDevice()
 	selector = selector.set_required_features_12(features12);
 	selector = selector.add_required_extension_features<VkPhysicalDeviceAccelerationStructureFeaturesKHR>(accelFeature);
 	selector = selector.add_required_extension_features<VkPhysicalDeviceRayTracingPipelineFeaturesKHR>(rtPipelineFeature);
-	//selector = selector.add_required_extension_features<VkPhysicalDeviceRayTracingValidationFeaturesNV>(physicalDeviceRayTracingValidationFeaturesNV);
+	selector = selector.add_required_extension_features<VkPhysicalDeviceRayQueryFeaturesKHR>(rayQueryFeatures);
+#if defined(DEBUG) || defined(RELEASE)
+	selector = selector.add_required_extension_features<VkPhysicalDeviceRayTracingValidationFeaturesNV>(physicalDeviceRayTracingValidationFeaturesNV);
+#endif
 	selector = selector.add_required_extension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
 	selector = selector.add_required_extension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
-	//selector = selector.add_required_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME);
+	selector = selector.add_required_extension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+
+#if defined(DEBUG) || defined(RELEASE)
+	selector = selector.add_required_extension(VK_NV_RAY_TRACING_VALIDATION_EXTENSION_NAME);
+#endif
+
 	selector = selector.add_required_extension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
 	selector = selector.set_surface(surface);
 	std::vector<vkb::PhysicalDevice> physicalDevices = selector.select_devices().value();
@@ -392,7 +554,7 @@ void ruya::VulkanContext::CreateDevice()
 
 	if(physicalDevices.size() == 1)
 	{
-		RUYA_LOG_INFO("[Vulkan] Automatically device 0 selected: %s", physicalDevices[0].name.c_str());
+		RUYA_LOG_INFO("[Vulkan] Automatically device 0 selected: {}", physicalDevices[0].name.c_str());
 
 		selectedDevice = physicalDevices[0];
 	}
@@ -419,12 +581,60 @@ void ruya::VulkanContext::CreateDevice()
 		selectedDevice = physicalDevices[selectedDeviceIndex];
 	}
 
-	vkb::DeviceBuilder deviceBuilder{ selectedDevice };
+	uint32_t gfxFamilyIndex = UINT32_MAX;
+	uint32_t transferFamilyIndex = UINT32_MAX;
+	{
+		uint32_t count = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(selectedDevice.physical_device, &count, nullptr);
+		std::vector<VkQueueFamilyProperties> props(count);
+		vkGetPhysicalDeviceQueueFamilyProperties(selectedDevice.physical_device, &count, props.data());
 
+		for (uint32_t i = 0; i < count; i++)
+		{
+			if (props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+			{
+				gfxFamilyIndex = i;
+				break;
+			}
+		}
+
+		for (uint32_t i = 0; i < count; i++)
+		{
+			if (i == gfxFamilyIndex) continue;
+
+			bool hasGfx = props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT;
+			bool hasTransfer = props[i].queueFlags & VK_QUEUE_TRANSFER_BIT;
+			bool hasCompute = props[i].queueFlags & VK_QUEUE_COMPUTE_BIT;
+
+			if (!hasGfx && hasTransfer && hasCompute)
+			{
+				transferFamilyIndex = i;
+				RUYA_LOG_INFO("[Vulkan] Dedicated transfer queue family found: {}", i);
+				break;
+			}
+		}
+	}
+
+	std::vector<vkb::CustomQueueDescription> queueDescs;
+	if (gfxFamilyIndex == transferFamilyIndex)
+	{
+		queueDescs.push_back(vkb::CustomQueueDescription(gfxFamilyIndex, { 1.0f, 0.5f }));
+	}
+	else
+	{
+		queueDescs.push_back(vkb::CustomQueueDescription(gfxFamilyIndex, { 1.0f }));
+		queueDescs.push_back(vkb::CustomQueueDescription(transferFamilyIndex, { 1.0f }));
+	}
+
+	vkb::DeviceBuilder deviceBuilder{ selectedDevice };
+	deviceBuilder.custom_queue_setup(queueDescs);
 	vkbDevice = deviceBuilder.build().value();
 
 	device = vkbDevice.device;
 	physicalDevice = selectedDevice.physical_device;
+
+	graphicsQueueFamilyIndex = gfxFamilyIndex;
+	asyncQueueFamilyIndex = transferFamilyIndex;
 
 	volkLoadDevice(device);
 }
@@ -436,8 +646,11 @@ void ruya::VulkanContext::DestroyDevice()
 
 void ruya::VulkanContext::SetDeviceQueue()
 {
-	deviceQueue = vkbDevice.get_queue(vkb::QueueType::graphics).value();
-	deviceQueueFamilyIndex = vkbDevice.get_queue_index(vkb::QueueType::graphics).value();
+	vkGetDeviceQueue(device, graphicsQueueFamilyIndex, 0, &graphicsQueue);
+	vkGetDeviceQueue(device, asyncQueueFamilyIndex, 0, &asyncQueue);
+
+	RUYA_LOG_INFO("[Queue] graphicsQueue: {:p} (family {})", (void*)graphicsQueue, graphicsQueueFamilyIndex);
+	RUYA_LOG_INFO("[Queue] asyncQueue:    {:p} (family {})", (void*)asyncQueue, asyncQueueFamilyIndex);
 }
 
 void ruya::VulkanContext::CreateSwapchain()
@@ -587,11 +800,11 @@ void ruya::VulkanContext::CreateImmediateCommandBufferAndFence()
 	commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 	commandPoolInfo.pNext = nullptr;
 	commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-	commandPoolInfo.queueFamilyIndex = deviceQueueFamilyIndex;
+	commandPoolInfo.queueFamilyIndex = asyncQueueFamilyIndex;
 
-	CHECK_VKRESULT(vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commandPool));
+	CHECK_VKRESULT(vkCreateCommandPool(device, &commandPoolInfo, nullptr, &asyncCommandPool));
 
-	commandBuffer = std::make_unique<VulkanCommandBuffer>(this, commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+	asyncCommandBuffer = std::make_unique<VulkanCommandBuffer>(this, asyncCommandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 
 	VkFenceCreateInfo fenceCreateInfo = {};
 	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
@@ -604,7 +817,7 @@ void ruya::VulkanContext::CreateImmediateCommandBufferAndFence()
 void ruya::VulkanContext::DestroyImmediateCommandBufferAndFence()
 {
 	vkDestroyFence(device, immediateFence, nullptr);
-	vkDestroyCommandPool(device, commandPool, nullptr);
+	vkDestroyCommandPool(device, asyncCommandPool, nullptr);
 }
 
 void ruya::VulkanContext::CreateVulkanMemoryAllocator()

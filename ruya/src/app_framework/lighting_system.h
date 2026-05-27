@@ -2,7 +2,7 @@
 #include <vector>
 #include <memory>
 
-#include <graphics/directional_light.h>
+#include <graphics/atmospheric_light.h>
 
 #include "scene_system.h"
 
@@ -19,9 +19,9 @@ namespace ruya
 
 		void OnEngineUpdate() override;
 
-		DirectionalLight* GetDirectionalLight() const;
+		AtmosphericLight* GetDirectionalLight() const;
 
 	private:
-		std::unique_ptr<DirectionalLight> directionalLight;
+		std::unique_ptr<AtmosphericLight> directionalLight;
 	};
 }

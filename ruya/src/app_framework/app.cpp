@@ -3,8 +3,12 @@
 #include <core/hash_code_generator.h>
 #include <core/assert.h>
 
+#include <tracy/tracy/Tracy.hpp>
+
 void ruya::App::OnStart()
 {
+    ZoneScoped;
+
     for (auto& pair : loadedScenes)
     {
         Scene* scene = pair.second;
@@ -14,6 +18,8 @@ void ruya::App::OnStart()
 
 void ruya::App::OnUpdate()
 {
+    ZoneScoped;
+
     for (auto& pair : loadedScenes)
     {
         Scene* scene = pair.second;
@@ -23,6 +29,8 @@ void ruya::App::OnUpdate()
 
 void ruya::App::OnShutdown()
 {
+    ZoneScoped;
+
     for (auto& pair : loadedScenes)
     {
         Scene* scene = pair.second;
@@ -32,6 +40,8 @@ void ruya::App::OnShutdown()
 
 void ruya::App::OnEngineUpdate()
 {
+    ZoneScoped;
+
     for (auto& pair : loadedScenes)
     {
         Scene* scene = pair.second;
@@ -151,4 +161,21 @@ void ruya::App::UnloadScene(RyID sceneId)
     scenes[sceneId]->OnSceneUnload();
 
     RUYA_LOG_INFO("Scene unloaded. {}", scenes[sceneId]->GetName());
+}
+
+bool ruya::App::HasScene(RyID sceneId) const
+{
+    return scenes.contains(sceneId);
+}
+
+void ruya::App::SetSceneAssetUUID(RyID sceneId, UUID uuid)
+{
+    sceneAssetMap[sceneId] = uuid;
+}
+
+ruya::UUID ruya::App::GetSceneAssetUUID(RyID sceneId) const
+{
+    if (sceneAssetMap.contains(sceneId))
+        return sceneAssetMap.at(sceneId);
+    return UUID::Invalid();
 }

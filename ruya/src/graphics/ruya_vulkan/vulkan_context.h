@@ -2,6 +2,7 @@
 #include <string>
 #include <functional>
 #include <memory>
+#include <thread>
 
 #include <volk/volk.h>
 #include <vk_bootstrap/VkBootstrap.h>
@@ -14,6 +15,54 @@
 
 namespace ruya
 {
+	struct PendingBufferAcquire
+	{
+		VulkanBuffer* buffer;
+		VkPipelineStageFlags dstStageMask;
+		VkAccessFlags dstAccessMask;
+	};
+
+	struct PendingImageAcquire
+	{
+		VulkanImage* image;
+		VkImageLayout oldLayout;
+		VkImageLayout newLayout;
+		VkPipelineStageFlags dstStageMask;
+		VkAccessFlags dstAccessMask;
+		VkImageSubresourceRange subresourceRange;
+	};
+
+	struct ImmediateSubmitTransferList
+	{
+		struct BufferEntry
+		{
+			VulkanBuffer* buffer;
+
+			VkPipelineStageFlags releaseStage;
+			VkAccessFlags        releaseAccess;
+
+			VkPipelineStageFlags finalStage;
+			VkAccessFlags        finalAccess;
+		};
+		std::vector<BufferEntry> buffers;
+
+		struct ImageEntry
+		{
+			VulkanImage* image;
+
+			VkImageLayout         finalLayout;
+
+			VkPipelineStageFlags  releaseStage;
+			VkAccessFlags         releaseAccess;
+
+			VkPipelineStageFlags  finalStage;
+			VkAccessFlags         finalAccess;
+
+			VkImageSubresourceRange subresourceRange;
+		};
+		std::vector<ImageEntry> images;
+	};
+
 	class VulkanContext
 	{
 	public:
@@ -24,7 +73,6 @@ namespace ruya
 		VulkanContext& operator=(const VulkanContext&) = delete;
 
 		void Init(Window* window, bool useValidation);
-		void Destroy();
 
 		VkInstance GetInstance() const;
 		VkPhysicalDevice GetPhysicalDevice() const;
@@ -41,7 +89,7 @@ namespace ruya
 
 		VmaAllocator GetVulkanMemoryAllocator() const;
 
-		void ImmediateSubmitCommand(std::function<void(VulkanCommandBuffer* commandBuffer)>&& function);
+		void ImmediateSubmitCommand(std::function<void(VulkanCommandBuffer* commandBuffer)>&& function, const ImmediateSubmitTransferList& transferList = {});
 
 		bool BeginFrame();
 		void EndFrame();
@@ -92,8 +140,11 @@ namespace ruya
 		VkDevice device;
 		VkPhysicalDevice physicalDevice;
 
-		VkQueue deviceQueue;
-		uint32_t deviceQueueFamilyIndex;
+		VkQueue graphicsQueue;
+		uint32_t graphicsQueueFamilyIndex;
+
+		VkQueue asyncQueue;
+		uint32_t asyncQueueFamilyIndex;
 
 		VkFormat swapChainImageFormat;
 		VkColorSpaceKHR swapchainColorSpace;
@@ -112,8 +163,11 @@ namespace ruya
 
 		VmaAllocator vulkanMemoryAllocator;
 
-		VkCommandPool commandPool;
-		std::unique_ptr<VulkanCommandBuffer> commandBuffer;
+		VkCommandPool asyncCommandPool;
+		std::unique_ptr<VulkanCommandBuffer> asyncCommandBuffer;
 		VkFence immediateFence;
+		std::vector<PendingBufferAcquire> pendingBufferAcquires;
+		std::vector<PendingImageAcquire> pendingImageAcquires;
+		std::mutex acquiresMutex;
 	};
 }

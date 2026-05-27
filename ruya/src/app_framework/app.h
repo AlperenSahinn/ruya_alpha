@@ -6,11 +6,21 @@
 #include <vector>
 
 #include <core/ry_id.h>
+#include <core/uuid.h>
 
 #include "scene.h"
 
 namespace ruya
 {
+	enum class AppState
+	{
+		AppStart,
+		AppUpdate,
+		AppPause,
+		AppShutdown,
+		AppReady
+	};
+
 	class App
 	{
 	public:
@@ -38,8 +48,14 @@ namespace ruya
 		const std::vector<RyID> GetLoadedScenes() const;
 		void UnloadScene(RyID sceneId);
 
+		bool HasScene(RyID sceneId) const;
+		void SetSceneAssetUUID(RyID sceneId, UUID uuid);
+		UUID GetSceneAssetUUID(RyID sceneId) const;
+
 	private:
 		std::unordered_map<RyID, std::unique_ptr<Scene>> scenes;
 		std::unordered_map<RyID, Scene*> loadedScenes;
+
+		std::unordered_map<RyID, UUID> sceneAssetMap;
 	};
 }
