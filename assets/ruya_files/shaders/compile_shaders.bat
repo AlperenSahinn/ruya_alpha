@@ -1,6 +1,6 @@
 @echo off
 
-set SLANGC=C:\VulkanSDK\1.4.341.1\Bin\slangc.exe
+set SLANGC=slangc.exe
 
 set FLAGS=-profile glsl_460 -target spirv -emit-spirv-directly -matrix-layout-column-major -I.
 

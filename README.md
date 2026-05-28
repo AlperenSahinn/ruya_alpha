@@ -45,7 +45,6 @@ git clone --recursive https://github.com/AlperenSahinn/ruya_alpha.git
 
 ```
 
-
 2. **Run the Setup Script:**
 Navigate to the `build_system` directory and run:
 ```batch
@@ -53,10 +52,13 @@ setup_windows.bat
 
 ```
 
-
 This will generate the **Visual Studio 2026** solution.
+
 3. **Build:**
 Open the generated solution in VS2026 and build the project in `distribution` mode.
+
+4. **Compiling shaders:**
+Run the compile_shaders.bat file in `assets/ruya_files/shaders` to compile shaders.
 
 ### Running the Editor
 
