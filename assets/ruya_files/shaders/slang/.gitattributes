@@ -1,0 +1,11 @@
+slang-glsl-module.dll filter=lfs diff=lfs merge=lfs -text
+slang-glslang.dll filter=lfs diff=lfs merge=lfs -text
+slang-llvm.dll filter=lfs diff=lfs merge=lfs -text
+slang-rt.dll filter=lfs diff=lfs merge=lfs -text
+slang.dll filter=lfs diff=lfs merge=lfs -text
+gfx.dll filter=lfs diff=lfs merge=lfs -text
+slang-compiler.dll filter=lfs diff=lfs merge=lfs -text
+slangd.exe filter=lfs diff=lfs merge=lfs -text
+slangi.exe filter=lfs diff=lfs merge=lfs -text
+slang.exe filter=lfs diff=lfs merge=lfs -text
+slangc.exe filter=lfs diff=lfs merge=lfs -text

@@ -1,6 +1,6 @@
 @echo off
 
-set SLANGC=slangc.exe
+set SLANGC=slang\slangc.exe
 
 set FLAGS=-profile glsl_460 -target spirv -emit-spirv-directly -matrix-layout-column-major -I.
 
